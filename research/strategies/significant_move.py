@@ -71,10 +71,16 @@ def classify_move_strength(imp, fib_df: pd.DataFrame, atr_series: pd.Series) -> 
 class SignificantMoveContinuation(Strategy):
     name = "significant_move_continuation"
 
-    def __init__(self, required_strength: str = "STRONG_MOVE"):
+    def __init__(self, required_strength: str = "STRONG_MOVE", strength_override: dict | None = None):
         assert required_strength in ("STRONG_MOVE", "MODERATE_MOVE", "WEAK_MOVE")
         self.required_strength = required_strength
         self.variant = required_strength.lower()
+        # Phase 8X negative control hook: when provided, {id(impulse): label}
+        # is used INSTEAD OF classify_move_strength's real geometry-based
+        # label, so a caller can test "does the strategy's apparent edge
+        # depend on the REAL strength label, or would a randomly shuffled
+        # label produce the same result?" without duplicating scan logic.
+        self.strength_override = strength_override
 
     def scan(self, ctx) -> Tuple[List[Signal], List[RejectedCandidate]]:
         exec_df = ctx.frames[ctx.execution_tf]
@@ -84,7 +90,11 @@ class SignificantMoveContinuation(Strategy):
 
         fib_atr = ctx.atr_series.reindex(fib_df.index).ffill()
         for imp in ctx.impulses:
-            strength, metrics = classify_move_strength(imp, fib_df, fib_atr)
+            if self.strength_override is not None:
+                strength = self.strength_override.get(id(imp), "UNKNOWN")
+                metrics = {}
+            else:
+                strength, metrics = classify_move_strength(imp, fib_df, fib_atr)
             direction = "LONG" if imp.direction == "UP" else "SHORT"
 
             checks = [

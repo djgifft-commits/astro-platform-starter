@@ -21,8 +21,19 @@ from research.core.structure import find_structure_events
 Regime = Literal[
     "STRONG_UPTREND", "UP_TREND", "WEAK_UPTREND", "RANGE",
     "WEAK_DOWNTREND", "DOWN_TREND", "STRONG_DOWNTREND",
-    "HIGH_VOLATILITY", "LOW_VOLATILITY", "TRANSITION", "UNKNOWN",
+    "HIGH_VOLATILITY", "LOW_VOLATILITY", "EXPANSION", "CONTRACTION",
+    "TRANSITION", "UNKNOWN",
 ]
+# Phase 8E asks for a minimal 10-class taxonomy (STRONG/WEAK UP/DOWN,
+# RANGING, EXPANSION, CONTRACTION, HIGH/LOW_VOLATILITY, TRANSITION).
+# Phase 7's existing names are kept unchanged (renaming would silently
+# break every strategy's regime-matching set, e.g.
+# research/strategies/trend_pullback.py's TREND_REGIMES_LONG/SHORT) and
+# are a strict superset: Phase 7's UP_TREND/DOWN_TREND is a 3rd trend
+# strength level Phase 8E doesn't ask for but doesn't forbid either.
+# EXPANSION and CONTRACTION are the two states genuinely new in Phase 8E
+# and are added below without touching any existing state's name or
+# threshold.
 
 
 def _slope_zscore(close: pd.Series, lookback: int) -> pd.Series:
@@ -48,11 +59,29 @@ def _slope_zscore(close: pd.Series, lookback: int) -> pd.Series:
     return ((slope / ret_std.replace(0, np.nan)) * np.sqrt(lookback)).rename("slope_z")
 
 
+def _current_structure_direction(df: pd.DataFrame, events: list) -> pd.Series:
+    """Causal running structural direction: LONG/SHORT/NEUTRAL after the
+    most recently confirmed BOS/CHOCH event as of each bar (same mechanism
+    as research/core/bias.py::_tf_direction_asof, duplicated here to avoid
+    a circular import between core.regime and core.bias)."""
+    direction = pd.Series("NEUTRAL", index=df.index, dtype=object)
+    current = "NEUTRAL"
+    event_iter = iter(events)
+    next_event = next(event_iter, None)
+    for pos in range(len(df)):
+        while next_event is not None and next_event.index_pos == pos:
+            current = "LONG" if next_event.direction == "BULLISH" else "SHORT"
+            next_event = next(event_iter, None)
+        direction.iloc[pos] = current
+    return direction
+
+
 def compute_regime_features(
     df: pd.DataFrame,
     slope_lookback: int = 50,
     vol_lookback: int = 100,
     structure_confirm_bars: int = 3,
+    volatility_roc_lookback: int = 20,
 ) -> pd.DataFrame:
     natr = normalized_atr(df, period=14)
     natr_pctile = natr.rolling(vol_lookback, min_periods=vol_lookback // 2).rank(pct=True)
@@ -62,6 +91,7 @@ def compute_regime_features(
     event_series = pd.Series("NONE", index=df.index)
     for e in events:
         event_series.iloc[e.index_pos] = f"{e.kind}_{e.direction}"
+    structure_direction = _current_structure_direction(df, events)
 
     # trend persistence: fraction of last `slope_lookback` closes that are directionally consistent with slope sign
     direction = np.sign(df["close"].diff())
@@ -69,12 +99,20 @@ def compute_regime_features(
         lambda w: float((np.sign(w.sum()) == w).mean()) if w.sum() != 0 else 0.5, raw=True
     )
 
+    # volatility rate-of-change: is realized volatility itself trending up
+    # (EXPANSION) or down (CONTRACTION), as distinct from its absolute
+    # level (HIGH_VOLATILITY/LOW_VOLATILITY, which natr_pctile already
+    # captures) -- percent change of ATR over volatility_roc_lookback bars.
+    natr_roc = natr.pct_change(volatility_roc_lookback)
+
     out = pd.DataFrame(
         {
             "natr": natr,
             "natr_pctile": natr_pctile,
+            "natr_roc": natr_roc,
             "slope_z": slope_z,
             "structure_event": event_series,
+            "structure_direction": structure_direction,
             "trend_persistence": persistence,
         },
         index=df.index,
@@ -82,13 +120,21 @@ def compute_regime_features(
     return out
 
 
-def classify_regime(features: pd.DataFrame) -> pd.DataFrame:
+def classify_regime(features: pd.DataFrame, expansion_roc_threshold: float = 0.15) -> pd.DataFrame:
     """Map causal features -> MARKET_STATE. Thresholds are explicit and
     documented; they are a starting hypothesis, sensitivity-tested in the
-    ablation/validation phase, not asserted as universally correct."""
+    ablation/validation phase, not asserted as universally correct.
+
+    Phase 8E adds EXPANSION/CONTRACTION (volatility ACCELERATING up/down,
+    from natr_roc) and structure_state (from the causal BOS/CHOCH
+    direction in research/core/structure.py) to Phase 7's original 8
+    trend/volatility states -- neither changes any existing threshold or
+    state name."""
     slope_z = features["slope_z"]
     natr_pctile = features["natr_pctile"]
+    natr_roc = features.get("natr_roc", pd.Series(np.nan, index=features.index))
     persistence = features["trend_persistence"]
+    structure_direction = features.get("structure_direction", pd.Series("NEUTRAL", index=features.index))
 
     regime = pd.Series("UNKNOWN", index=features.index, dtype=object)
     strength = pd.Series(0.0, index=features.index)
@@ -99,6 +145,8 @@ def classify_regime(features: pd.DataFrame) -> pd.DataFrame:
 
     high_vol = has_data & (natr_pctile >= 0.85)
     low_vol = has_data & (natr_pctile <= 0.15)
+    expanding_vol = has_data & natr_roc.notna() & (natr_roc >= expansion_roc_threshold)
+    contracting_vol = has_data & natr_roc.notna() & (natr_roc <= -expansion_roc_threshold)
 
     strong_up = has_data & (slope_z >= 1.5) & (persistence >= 0.65)
     up = has_data & (slope_z >= 0.75) & (slope_z < 1.5) & (persistence >= 0.55)
@@ -117,8 +165,13 @@ def classify_regime(features: pd.DataFrame) -> pd.DataFrame:
     regime[dn] = "DOWN_TREND"
     regime[strong_dn] = "STRONG_DOWNTREND"
     regime[transition] = "TRANSITION"
-    # volatility state is reported alongside trend regime, not overriding it,
-    # except when it is extreme enough with no clear trend to dominate:
+    # Within the no-clear-trend (RANGE) zone only, a rapidly moving
+    # volatility rate-of-change is more informative than the trend/range
+    # split itself -- checked in order (most specific wins): EXPANSION and
+    # CONTRACTION are rate-of-change facts, HIGH_VOLATILITY is a level
+    # fact, both only override a bare RANGE label, never an active trend.
+    regime[has_data & expanding_vol & rng] = "EXPANSION"
+    regime[has_data & contracting_vol & rng] = "CONTRACTION"
     regime[has_data & high_vol & rng] = "HIGH_VOLATILITY"
     regime[~has_data] = "UNKNOWN"
 
@@ -140,6 +193,7 @@ def classify_regime(features: pd.DataFrame) -> pd.DataFrame:
             "direction": direction,
             "confidence": confidence,
             "volatility_state": vol_state,
+            "structure_state": structure_direction,
             "trend_persistence": persistence,
         },
         index=features.index,

@@ -58,7 +58,7 @@ def build_symbol_engine_data(
     atr_period: int = 14,
     structure_confirm_bars: int = 3,
 ) -> SymbolEngineData:
-    frames = resample_all(m1, ("M5", "M15", "H1", "H4", "D1"))
+    frames = resample_all(m1, ("M5", "M15", "M30", "H1", "H4", "D1"))
     frames["M1"] = m1
     exec_df = frames[execution_tf]
 
@@ -71,7 +71,7 @@ def build_symbol_engine_data(
     regime_on_exec = _asof_merge_regime(regime_state, exec_df.index)
 
     bias_series = compute_bias_series(
-        {tf: frames[tf] for tf in ("M5", "M15", "H1", "H4", "D1") if len(frames[tf]) > 20},
+        {tf: frames[tf] for tf in ("M5", "M15", "M30", "H1", "H4", "D1") if len(frames[tf]) > 20},
         confirm_bars=structure_confirm_bars,
     )
     bias_on_exec = _asof_merge_regime(bias_series, exec_df.index)

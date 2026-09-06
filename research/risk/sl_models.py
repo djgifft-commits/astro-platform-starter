@@ -6,16 +6,15 @@ available at/before the signal's entry timestamp (causal). No model here
 is assumed superior; research/backtest/validation.py is where that
 question gets an answer, per-strategy, per-regime.
 
-Implemented (5 of the 8 named in the MASTER COMMAND): FIXED_ATR,
-STRUCTURE_INVALIDATION, SWING_EXTREME, OR_OPPOSITE_BOUNDARY,
-VOLATILITY_ADAPTIVE (a hybrid of ATR + regime volatility state, which also
-covers the "hybrid structure + ATR buffer" case when combined with
-STRUCTURE_INVALIDATION's buffer argument). LIQUIDITY_INVALIDATION and
-OB_INVALIDATION are deferred: this project has no order-block detector
-(scope narrowing, see audit report) and liquidity-based stops would
-duplicate STRUCTURE_INVALIDATION under this project's swing-based
-liquidity-pool definition (research/core/liquidity.py) — implementing both
-would test the same hypothesis twice under different names.
+Implemented: FIXED_ATR, STRUCTURE_INVALIDATION, SWING_EXTREME,
+OR_OPPOSITE_BOUNDARY, VOLATILITY_ADAPTIVE (Phase 7), plus two added in
+Phase 8O: FIBONACCI_INVALIDATION (stop beyond the impulse's own origin —
+the classic "0%/100% Fibonacci invalidation" anchor) and LIQUIDITY_BASED
+(stop beyond the nearest ESTIMATED_STOP_LIQUIDITY pool on the invalidating
+side). OB_INVALIDATION remains deferred: this project has no order-block
+detector (scope narrowing, see audit report); implementing one solely to
+produce an eighth near-duplicate of STRUCTURE_INVALIDATION would not test
+a distinct hypothesis.
 """
 from __future__ import annotations
 
@@ -93,4 +92,46 @@ def volatility_adaptive(signal: Signal, atr_at_entry: float, volatility_state: s
     return StopLoss("VOLATILITY_ADAPTIVE", price, dist)
 
 
-SL_MODELS = ["FIXED_ATR", "STRUCTURE_INVALIDATION", "SWING_EXTREME", "OR_OPPOSITE_BOUNDARY", "VOLATILITY_ADAPTIVE"]
+def fibonacci_invalidation(signal: Signal, buffer_atr: float = 0.1, atr_at_entry: float = 0.0) -> Optional[StopLoss]:
+    """Stop beyond the originating impulse's own start price (the "0%/100%"
+    Fibonacci anchor) -- only usable for signals produced by a retracement-
+    based strategy (research/strategies/trend_pullback.py,
+    research/strategies/fib_pullback.py), which attach
+    `impulse_start_price` to `signal.meta`."""
+    start_price = signal.meta.get("impulse_start_price")
+    if start_price is None:
+        return None
+    buffer = buffer_atr * atr_at_entry
+    price = start_price - buffer if signal.direction == "LONG" else start_price + buffer
+    dist = abs(signal.entry_price - price)
+    if dist <= 0:
+        return None
+    return StopLoss("FIBONACCI_INVALIDATION", price, dist)
+
+
+def liquidity_based(signal: Signal, liquidity_pools: list, buffer_atr: float = 0.05, atr_at_entry: float = 0.0) -> Optional[StopLoss]:
+    """Stop just beyond the nearest ESTIMATED_STOP_LIQUIDITY pool on the
+    invalidating side of entry (e.g. the nearest SSL pool below entry for
+    a LONG). This is a geometric heuristic (research/core/liquidity.py) —
+    not a claim about real resting stop orders."""
+    kind_needed = "SSL" if signal.direction == "LONG" else "BSL"
+    candidates = [p for p in liquidity_pools if p.kind == kind_needed]
+    if signal.direction == "LONG":
+        candidates = [p for p in candidates if p.price < signal.entry_price]
+    else:
+        candidates = [p for p in candidates if p.price > signal.entry_price]
+    if not candidates:
+        return None
+    nearest = min(candidates, key=lambda p: abs(p.price - signal.entry_price))
+    buffer = buffer_atr * atr_at_entry
+    price = nearest.price - buffer if signal.direction == "LONG" else nearest.price + buffer
+    dist = abs(signal.entry_price - price)
+    if dist <= 0:
+        return None
+    return StopLoss("LIQUIDITY_BASED", price, dist)
+
+
+SL_MODELS = [
+    "FIXED_ATR", "STRUCTURE_INVALIDATION", "SWING_EXTREME", "OR_OPPOSITE_BOUNDARY",
+    "VOLATILITY_ADAPTIVE", "FIBONACCI_INVALIDATION", "LIQUIDITY_BASED",
+]

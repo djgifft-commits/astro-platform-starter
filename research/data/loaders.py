@@ -16,6 +16,7 @@ _PANDAS_FREQ = {
     "M1": "1min",
     "M5": "5min",
     "M15": "15min",
+    "M30": "30min",
     "H1": "1h",
     "H4": "4h",
     "D1": "1D",
@@ -53,7 +54,7 @@ def resample_ohlc(m1: pd.DataFrame, timeframe: str, spread_col: str = "spread") 
     return out
 
 
-def resample_all(m1: pd.DataFrame, timeframes=("M5", "M15", "H1", "H4", "D1")) -> dict[str, pd.DataFrame]:
+def resample_all(m1: pd.DataFrame, timeframes=("M5", "M15", "M30", "H1", "H4", "D1")) -> dict[str, pd.DataFrame]:
     return {tf: resample_ohlc(m1, tf) for tf in timeframes}
 
 
@@ -68,7 +69,7 @@ if __name__ == "__main__":
 
     ds = generate_multi_symbol_dataset(["EURUSD"], n_days=5)
     m1 = ds["EURUSD"].bars
-    for tf in ("M5", "M15", "H1", "H4", "D1"):
+    for tf in ("M5", "M15", "M30", "H1", "H4", "D1"):
         out = resample_ohlc(m1, tf)
         bar_minutes = TIMEFRAMES_MINUTES[tf]
         expected_last_start = m1.index[-1].floor(f"{bar_minutes}min")

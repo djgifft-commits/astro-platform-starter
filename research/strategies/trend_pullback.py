@@ -87,7 +87,8 @@ class TrendPullback(Strategy):
                         market_condition=str(regime_row["regime_regime"]), directional_bias=str(regime_row.get("bias_bias", "")),
                         candle_pattern=hit[0], fib_state=f"level_{outcome.level}", liquidity_state=None,
                         displacement_state=f"impulse_size_atr_mult={imp.size:.5f}",
-                        meta={"retracement_level": outcome.level, "impulse_start": str(imp.start_ts), "impulse_end": str(imp.end_ts)},
+                        meta={"retracement_level": outcome.level, "impulse_start": str(imp.start_ts), "impulse_end": str(imp.end_ts),
+                              "impulse_start_price": imp.start_price, "impulse_end_price": imp.end_price},
                     ))
                     entered = True
                     break

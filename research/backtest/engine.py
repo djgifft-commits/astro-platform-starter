@@ -32,6 +32,10 @@ class BacktestConfig:
     tp_model: Optional[str] = "FIXED_2R"
     exit_model: str = "FIXED"
     apply_spread_cost: bool = True
+    # Phase 8AF cost sensitivity: multiplies the synthetic spread series at
+    # BOTH entry and exit. 0.0 = COST_NEUTRAL, 1.0 = BASE_COST (Phase 7's
+    # original assumption), 2.0 = ADVERSE_COST, 5.0 = STRESS_COST.
+    spread_multiplier: float = 1.0
 
 
 @dataclasses.dataclass
@@ -63,6 +67,10 @@ def apply_sl_model(model: str, signal: Signal, ctx: SymbolEngineData, atr_at_ent
         row = ctx.feature_bars.asof(signal.entry_ts)
         vol_state = row.get("regime_volatility_state", "NORMAL") if row is not None else "NORMAL"
         return sl_models.volatility_adaptive(signal, atr_at_entry, vol_state)
+    if model == "FIBONACCI_INVALIDATION":
+        return sl_models.fibonacci_invalidation(signal, atr_at_entry=atr_at_entry)
+    if model == "LIQUIDITY_BASED":
+        return sl_models.liquidity_based(signal, ctx.liquidity_pools, atr_at_entry=atr_at_entry)
     raise ValueError(f"unknown SL model {model}")
 
 
@@ -77,6 +85,9 @@ def apply_tp_model(model: Optional[str], signal: Signal, sl: sl_models.StopLoss,
         return tp_models.atr_target(signal, atr_at_entry)
     if model == "STRUCTURE_TARGET":
         return tp_models.structure_target(signal, ctx.swings, entry_pos)
+    if model.startswith("OR_EXTENSION_"):
+        mult = float(model[len("OR_EXTENSION_"):-1])
+        return tp_models.or_extension(signal, extension_mult=mult)
     raise ValueError(f"unknown TP model {model}")
 
 
@@ -93,7 +104,7 @@ def run_backtest(ctx: SymbolEngineData, strategy: Strategy, config: BacktestConf
         entry_price = sig.entry_price
         if config.apply_spread_cost:
             spread_row = exec_df["spread"].asof(sig.entry_ts) if "spread" in exec_df.columns else 0.0
-            half_spread = (spread_row or 0.0) / 2.0
+            half_spread = (spread_row or 0.0) / 2.0 * config.spread_multiplier
             entry_price = entry_price + half_spread if sig.direction == "LONG" else entry_price - half_spread
             sig = dataclasses.replace(sig, entry_price=entry_price)
 
@@ -108,6 +119,18 @@ def run_backtest(ctx: SymbolEngineData, strategy: Strategy, config: BacktestConf
             structure_events=ctx.structure_events, swings=ctx.swings,
             sl_model_name=sl.model, tp_model_name=(tp.model if tp else None),
         )
+
+        if config.apply_spread_cost and result.exit_ts is not None and result.exit_reason not in ("NO_FUTURE_DATA", "INVALID_RISK"):
+            exit_spread_row = exec_df["spread"].asof(result.exit_ts) if "spread" in exec_df.columns else 0.0
+            half_spread_exit = (exit_spread_row or 0.0) / 2.0 * config.spread_multiplier
+            adjusted_exit_price = (
+                result.exit_price - half_spread_exit if sig.direction == "LONG" else result.exit_price + half_spread_exit
+            )
+            sign = 1 if sig.direction == "LONG" else -1
+            pnl_price = sign * (adjusted_exit_price - result.entry_price)
+            adjusted_r = pnl_price / result.initial_risk if result.initial_risk > 0 else result.r_multiple
+            result = dataclasses.replace(result, exit_price=adjusted_exit_price, r_multiple=adjusted_r)
+
         trades.append(result)
 
     return BacktestRun(symbol=ctx.symbol, strategy=strategy.name, variant=getattr(strategy, "variant", ""),

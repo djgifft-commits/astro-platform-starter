@@ -18,7 +18,7 @@ from research.core.structure import find_structure_events
 
 Bias = Literal["STRONG_LONG", "LONG", "NEUTRAL", "SHORT", "STRONG_SHORT"]
 
-TIMEFRAME_WEIGHTS = {"D1": 3.0, "H4": 2.5, "H1": 2.0, "M15": 1.0, "M5": 0.5}
+TIMEFRAME_WEIGHTS = {"D1": 3.0, "H4": 2.5, "H1": 2.0, "M30": 1.5, "M15": 1.0, "M5": 0.5}
 
 
 def _tf_direction_asof(df: pd.DataFrame, confirm_bars: int = 3) -> pd.Series:
@@ -150,6 +150,18 @@ def compute_bias_series(frames: Dict[str, pd.DataFrame], confirm_bars: int = 3) 
 
     confidence = (supporting_count / (supporting_count + conflicting_count).replace(0, pd.NA)).astype(float).fillna(0.0)
 
+    # Phase 8F: a separate 4-state vocabulary (BULLISH/BEARISH/NEUTRAL/
+    # CONFLICTED), distinct from the 5-state STRONG_LONG..STRONG_SHORT
+    # scale above. CONFLICTED is not just "weak" -- it specifically means
+    # multiple timeframes actively disagree (both supporting_count and
+    # conflicting_count are non-trivial), which NEUTRAL (no strong signal
+    # either way, low conflict) does not capture.
+    bias_4state = pd.Series("NEUTRAL", index=base_index, dtype=object)
+    bias_4state[norm_score > 0.15] = "BULLISH"
+    bias_4state[norm_score < -0.15] = "BEARISH"
+    has_real_conflict = (conflicting_count >= 1) & (supporting_count >= 1) & (conflicting_count >= supporting_count * 0.75)
+    bias_4state[has_real_conflict] = "CONFLICTED"
+
     return pd.DataFrame(
         {
             "bias": bias,
@@ -157,6 +169,7 @@ def compute_bias_series(frames: Dict[str, pd.DataFrame], confirm_bars: int = 3) 
             "bias_confidence": confidence,
             "bias_supporting_count": supporting_count,
             "bias_conflicting_count": conflicting_count,
+            "bias_4state": bias_4state,
         },
         index=base_index,
     )

@@ -22,10 +22,11 @@ import plotly.graph_objects as go
 from dash import Input, Output, State, dash_table, dcc, html
 
 RESULTS_DIR = Path(__file__).parent.parent / "research" / "results"
+RESULTS_DIR_8 = Path(__file__).parent.parent / "research" / "results_8"
 
 
-def load(name: str):
-    path = RESULTS_DIR / f"{name}.json"
+def load(name: str, base: Path = RESULTS_DIR):
+    path = base / f"{name}.json"
     if not path.exists():
         return None
     with open(path) as f:
@@ -48,6 +49,24 @@ candles = load("candles_eurusd_sample") or []
 overlays = load("overlays_eurusd_sample") or {}
 data_quality = load("data_quality") or []
 regime_validation = load("regime_validation") or {}
+
+# Phase 8 artifacts (research/results_8/) -- corrected cost model, expanded
+# regime taxonomy, and every genuinely new Phase 8 experiment. Loaded
+# alongside (never merged into) the Phase 7 artifacts above.
+matrix_corrected = load("matrix_corrected", RESULTS_DIR_8) or []
+no_trade_funnel = load("no_trade_funnel", RESULTS_DIR_8) or []
+sl_comparison_v2 = load("sl_comparison_v2", RESULTS_DIR_8) or []
+tp_comparison_v2 = load("tp_comparison_v2", RESULTS_DIR_8) or []
+cost_sensitivity = load("cost_sensitivity", RESULTS_DIR_8) or []
+nested_bias_experiment = load("nested_bias_experiment", RESULTS_DIR_8) or []
+ablation_matrix_8 = load("ablation_matrix", RESULTS_DIR_8) or []
+rolling_hedge_correlation = load("rolling_hedge_correlation", RESULTS_DIR_8) or []
+negative_controls_8 = load("negative_controls", RESULTS_DIR_8) or {}
+trend_only_comparison = load("trend_only_comparison", RESULTS_DIR_8) or []
+strategy_selector_comparison = load("strategy_selector_comparison", RESULTS_DIR_8) or []
+robustness_perturbation = load("robustness_perturbation", RESULTS_DIR_8) or {}
+out_of_sample_locked = load("out_of_sample_locked", RESULTS_DIR_8) or {}
+mutation_tests = load("mutation_tests", RESULTS_DIR_8) or []
 
 candles_df = pd.DataFrame(candles)
 if not candles_df.empty:
@@ -407,6 +426,190 @@ def _show_trade_detail(selected_rows):
     return "\n".join(lines)
 
 
+# ============================================================ Phase 8 tabs
+PHASE8_BANNER = html.Div(
+    "PHASE 8 -- corrected cost model (exit-side spread now deducted, previously missing) and expanded "
+    "regime taxonomy. Numbers on this tab supersede the Phase 7 tables above for the same symbols/strategies.",
+    style={"background": "#e7f1ff", "border": "1px solid #4a90d9", "padding": "6px 12px",
+           "marginBottom": "8px", "fontSize": "12px", "fontFamily": "sans-serif"},
+)
+
+
+def corrected_matrix_tab():
+    if not matrix_corrected:
+        return html.Div("No Phase 8 corrected-matrix data -- run research/run_experiments_phase8.py first.")
+    df = pd.DataFrame(matrix_corrected)
+    keep = ["symbol", "strategy", "n", "win_rate", "expectancy_r", "profit_factor", "sharpe",
+            "max_drawdown_r", "verdict", "bh_fdr_survives"]
+    keep = [c for c in keep if c in df.columns]
+    agg_cols = [c for c in NUMERIC_COLS_TO_ROUND if c in df.columns]
+    agg = _round_df(df.groupby("strategy")[agg_cols].mean(numeric_only=True).reset_index())
+    return html.Div([
+        PHASE8_BANNER,
+        html.H4("Corrected Pair x Strategy matrix -- aggregated across symbols"),
+        make_table(agg, "corrected-agg-table"),
+        html.H4("Corrected matrix -- detail (with purge/embargo fold summary in raw JSON)"),
+        make_table(_round_df(df[keep]), "corrected-detail-table", page_size=30),
+    ])
+
+
+def bias_tab():
+    if not nested_bias_experiment:
+        return html.Div("No nested bias experiment data.")
+    rows = []
+    for r in nested_bias_experiment:
+        sym = r["symbol"]
+        for condition in ("BIAS_ONLY", "BIAS_PLUS_STRUCTURE", "BIAS_PLUS_STRUCTURE_PLUS_REGIME"):
+            c = r.get(condition, {})
+            rows.append({"symbol": sym, "condition": condition, "n": c.get("n"),
+                         "mean_signed_return_atr": c.get("mean_signed_return_atr"), "verdict": c.get("verdict")})
+    df = pd.DataFrame(rows)
+    if "mean_signed_return_atr" in df.columns:
+        df["mean_signed_return_atr"] = pd.to_numeric(df["mean_signed_return_atr"], errors="coerce").round(4)
+    return html.Div([
+        PHASE8_BANNER,
+        html.H4("Nested bias experiment: BIAS ONLY -> +STRUCTURE -> +STRUCTURE+REGIME"),
+        html.P("Target: ATR-normalized forward return, signed so correct bias direction is positive. "
+               "A monotonic increase across the three rows means each added confirmation layer adds real information."),
+        make_table(df, "bias-experiment-table", page_size=20),
+    ])
+
+
+def negative_controls_tab():
+    rows = []
+    for name, r in negative_controls_8.items():
+        if name == "hedge_pairing":
+            rows.append({"control": name, "real": r.get("real_mean_abs_correlation"),
+                         "permuted": r.get("permuted_pairing_mean_abs_correlation"),
+                         "edge_survives_control": r.get("edge_survives_control")})
+        else:
+            real = r.get("real", {})
+            permuted = r.get("permuted_structure_direction") or r.get("permuted_strength_label") or {}
+            rows.append({"control": name, "real_expectancy_r": real.get("expectancy_r"),
+                         "permuted_expectancy_r": permuted.get("expectancy_r"),
+                         "edge_survives_control": r.get("edge_survives_control")})
+    return html.Div([
+        PHASE8_BANNER,
+        html.H4("Negative controls -- real feature vs. permuted feature"),
+        html.P("A feature whose real result does not clearly beat its own permuted-label control is not "
+               "demonstrated to carry real information, regardless of how the real number looks in isolation."),
+        make_table(_round_df(pd.DataFrame(rows)), "negative-controls-table") if rows else html.Div("No data."),
+    ])
+
+
+def ablation_matrix_tab():
+    if not ablation_matrix_8:
+        return html.Div("No generalized ablation matrix data.")
+    rows = []
+    for r in ablation_matrix_8:
+        sym = r["symbol"]
+        for stage, stats in r.items():
+            if stage == "symbol":
+                continue
+            rows.append({"symbol": sym, "stage": stage, "n": stats.get("n"),
+                         "mean_signed_return_atr": stats.get("mean_signed_return_atr"),
+                         "verdict": stats.get("verdict")})
+    df = pd.DataFrame(rows)
+    if "mean_signed_return_atr" in df.columns:
+        df["mean_signed_return_atr"] = pd.to_numeric(df["mean_signed_return_atr"], errors="coerce").round(4)
+    return html.Div([
+        PHASE8_BANNER,
+        html.H4("Generalized ablation matrix: BASELINE + each feature independently"),
+        html.P("BASELINE is a deliberately trivial 1-bar breakout signal, not conditioned on any feature below -- "
+               "isolates whether each feature adds information on its own, not how good any one strategy's combination is."),
+        make_table(df, "ablation-matrix-table", page_size=30),
+    ])
+
+
+def hedge_correlation_tab():
+    if not rolling_hedge_correlation:
+        return html.Div("No rolling hedge correlation data.")
+    rows = []
+    for r in rolling_hedge_correlation:
+        row = {"pair": f"{r['symbol_a']}/{r['symbol_b']}", "window_bars": r["window_bars"],
+               "overall_mean_correlation": r["overall_mean_correlation"], "overall_mean_beta": r["overall_mean_beta"]}
+        for bucket, stats in r.get("regime_buckets", {}).items():
+            row[f"{bucket}_mean_corr"] = stats["mean_correlation"]
+        rows.append(row)
+    return html.Div([
+        PHASE8_BANNER,
+        html.H4("Rolling correlation/beta by regime bucket (designed synthetic correlation -- engine validation only)"),
+        make_table(_round_df(pd.DataFrame(rows)), "hedge-corr-table"),
+    ])
+
+
+def trend_only_tab():
+    if not trend_only_comparison:
+        return html.Div("No trend-only comparison data.")
+    rows = []
+    for r in trend_only_comparison:
+        sym = r["symbol"]
+        for mode in ("ALL_REGIMES", "TREND_ONLY", "STRONG_TREND_ONLY"):
+            stats = r.get(mode, {})
+            rows.append({"symbol": sym, "mode": mode, "n": stats.get("n"), "win_rate": stats.get("win_rate"),
+                         "expectancy_r": stats.get("expectancy_r"), "profit_factor": stats.get("profit_factor"),
+                         "sharpe": stats.get("sharpe"), "n_skipped": stats.get("n_skipped"),
+                         "opportunity_cost_total_r": stats.get("opportunity_cost_total_r")})
+    return html.Div([
+        PHASE8_BANNER,
+        html.H4("Aggressive trend-only mode: ALL_REGIMES vs TREND_ONLY vs STRONG_TREND_ONLY (trend_pullback)"),
+        make_table(_round_df(pd.DataFrame(rows)), "trend-only-table", page_size=30),
+    ])
+
+
+def strategy_selector_tab():
+    if not strategy_selector_comparison:
+        return html.Div("No strategy selector comparison data.")
+    rows = []
+    for r in strategy_selector_comparison:
+        sym = r["symbol"]
+        for mode in ("ALWAYS_ON", "RANDOM_SELECTION", "REGIME_SELECTOR"):
+            stats = r.get(mode, {})
+            rows.append({"symbol": sym, "mode": mode, "n": stats.get("n"), "win_rate": stats.get("win_rate"),
+                         "expectancy_r": stats.get("expectancy_r"), "profit_factor": stats.get("profit_factor"),
+                         "sharpe": stats.get("sharpe"), "keep_rate": stats.get("keep_rate")})
+    return html.Div([
+        PHASE8_BANNER,
+        html.H4("Strategy selection engine vs. random selection (matched keep-rate) vs. always-on"),
+        make_table(_round_df(pd.DataFrame(rows)), "selector-table", page_size=30),
+    ])
+
+
+def no_trade_funnel_tab():
+    if not no_trade_funnel:
+        return html.Div("No no-trade funnel data.")
+    df = pd.DataFrame(no_trade_funnel)
+    keep = ["symbol", "strategy", "n_candidates", "n_filtered", "n_confirmed_but_not_triggered",
+            "n_executed", "n_win", "n_loss", "filtered_rate", "confirmation_failure_rate", "execution_rate"]
+    keep = [c for c in keep if c in df.columns]
+    return html.Div([
+        PHASE8_BANNER,
+        html.H4("No-trade funnel: CANDIDATES -> FILTERED -> CONFIRMED -> EXECUTED -> WIN/LOSS"),
+        make_table(_round_df(df[keep]), "funnel-table", page_size=30),
+        html.H4("Rejection reason detail (per row, see filtered_reasons / confirmation_pending_reasons in raw JSON)"),
+        html.P(f"{RESULTS_DIR_8}/no_trade_funnel.json has the full per-cell rejection-reason breakdown.",
+               style={"fontSize": "12px", "color": "#666"}),
+    ])
+
+
+def robustness_oos_mutation_tab():
+    plateau_summary = robustness_perturbation.get("summary", {})
+    rows = robustness_perturbation.get("rows", [])
+    mutation_rows = mutation_tests
+    return html.Div([
+        PHASE8_BANNER,
+        html.H4("Parameter-perturbation robustness (trend_pullback x XAUUSD, the Phase 7 EDGE_ESTABLISHED cell)"),
+        html.P(f"Verdict: {plateau_summary.get('verdict', 'N/A')} -- "
+               f"{plateau_summary.get('fraction_positive_expectancy', 0):.0%} of {plateau_summary.get('n_configs_with_enough_trades', 0)} "
+               f"nearby parameter configurations retained positive expectancy."),
+        make_table(_round_df(pd.DataFrame(rows)), "robustness-table", page_size=30) if rows else html.Div("No data."),
+        html.H4("Locked out-of-sample test (frozen model, fresh seed, run once, reported as-is)"),
+        html.Pre(json.dumps(out_of_sample_locked, indent=2, default=str), style={"fontSize": "12px"}),
+        html.H4("Mutation testing (each row: was the intentional bug detected?)"),
+        make_table(pd.DataFrame(mutation_rows), "mutation-table") if mutation_rows else html.Div("No data."),
+    ])
+
+
 app.layout = html.Div([
     DISCLAIMER,
     html.H2("Multi-Strategy Hedge Backtest Terminal (Research / Synthetic Data)"),
@@ -423,6 +626,15 @@ app.layout = html.Div([
         dcc.Tab(label="Feature Ablation", children=[ablation_tab()]),
         dcc.Tab(label="Trade Inspector", children=[trade_inspector_tab()]),
         dcc.Tab(label="Data Quality / Audit", children=[data_quality_tab()]),
+        dcc.Tab(label="[P8] Corrected Matrix", children=[corrected_matrix_tab()]),
+        dcc.Tab(label="[P8] Directional Bias", children=[bias_tab()]),
+        dcc.Tab(label="[P8] Negative Controls", children=[negative_controls_tab()]),
+        dcc.Tab(label="[P8] Ablation Matrix", children=[ablation_matrix_tab()]),
+        dcc.Tab(label="[P8] Hedge Correlation", children=[hedge_correlation_tab()]),
+        dcc.Tab(label="[P8] Trend-Only Mode", children=[trend_only_tab()]),
+        dcc.Tab(label="[P8] Strategy Selector", children=[strategy_selector_tab()]),
+        dcc.Tab(label="[P8] No-Trade Funnel", children=[no_trade_funnel_tab()]),
+        dcc.Tab(label="[P8] Robustness/OOS/Mutation", children=[robustness_oos_mutation_tab()]),
     ]),
 ])
 

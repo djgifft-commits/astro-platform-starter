@@ -54,4 +54,22 @@ def structure_target(signal: Signal, swings: list, entry_pos: int) -> Optional[T
     return TakeProfit("STRUCTURE_TARGET", nearest.price, dist)
 
 
-TP_MODELS = ["FIXED_1R", "FIXED_1.5R", "FIXED_2R", "FIXED_3R", "ATR_TARGET", "STRUCTURE_TARGET"]
+def or_extension(signal: Signal, extension_mult: float = 1.0) -> Optional[TakeProfit]:
+    """Phase 8P: opening-range extension target -- projects the OR's own
+    range beyond the boundary the trade broke out through (a "measured
+    move" of the OR). Only usable for opening_range_breakout signals,
+    which attach or_high/or_low/or_mid to `signal.meta`."""
+    if "or_high" not in signal.meta or "or_low" not in signal.meta:
+        return None
+    or_range = signal.meta["or_high"] - signal.meta["or_low"]
+    if or_range <= 0:
+        return None
+    dist = or_range * extension_mult
+    price = signal.entry_price + dist if signal.direction == "LONG" else signal.entry_price - dist
+    return TakeProfit(f"OR_EXTENSION_{extension_mult}x", price, dist)
+
+
+TP_MODELS = [
+    "FIXED_1R", "FIXED_1.5R", "FIXED_2R", "FIXED_3R", "ATR_TARGET", "STRUCTURE_TARGET",
+    "OR_EXTENSION_1.0x",
+]

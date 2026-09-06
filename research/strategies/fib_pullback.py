@@ -79,6 +79,7 @@ class FibonacciPullback(Strategy):
                         candle_pattern=hit[0], fib_state=f"level_{self.level}", liquidity_state=None,
                         displacement_state=None,
                         meta={"level": self.level, "impulse_start": str(imp.start_ts), "impulse_end": str(imp.end_ts),
+                              "impulse_start_price": imp.start_price, "impulse_end_price": imp.end_price,
                               "bars_to_touch": outcome.bars_to_touch, "displacement_after_atr": outcome.displacement_after},
                     ))
                     entered = True

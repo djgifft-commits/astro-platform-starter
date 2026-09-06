@@ -19,6 +19,7 @@ import dataclasses
 from typing import Callable, Dict, List, Tuple
 
 import numpy as np
+import pandas as pd
 
 from research.risk.exit_models import TradeResult
 
@@ -56,6 +57,69 @@ def walk_forward_folds(trades: List[TradeResult], n_folds: int = 5) -> List[Tupl
         test = ordered[start:end]
         if test:
             folds.append((train, test))
+    return folds
+
+
+@dataclasses.dataclass
+class PurgedFold:
+    fold_index: int
+    fold_start: pd.Timestamp
+    fold_end: pd.Timestamp
+    train: List[TradeResult]
+    test: List[TradeResult]
+    n_purged: int
+    n_embargoed: int
+
+
+def purged_embargoed_folds(
+    trades: List[TradeResult],
+    n_folds: int = 5,
+    embargo: pd.Timedelta = pd.Timedelta(hours=24),
+) -> List[PurgedFold]:
+    """Phase 8W / RESEARCH_CARDS.md purged-CV card (Lopez de Prado 2017):
+    time-based (not count-based) fold boundaries; PURGE removes any
+    would-be training trade whose outcome window [entry_ts, exit_ts]
+    overlaps the test fold's time span; EMBARGO additionally removes
+    training trades entered within `embargo` after the test fold ends.
+
+    None of this project's strategies fit parameters on a training set
+    (they are fixed, hand-specified rules), so purging/embargoing the
+    TRAIN set changes nothing about what gets reported for the TEST set
+    -- what it protects is the INTERPRETATION of "N independent folds":
+    without it, two adjacent folds' trades can share overlapping outcome
+    windows across the boundary, making them less independent evidence
+    than a naive fold count implies. This function's practical output is
+    therefore the purge/embargo COUNTS (a diagnostic on how much boundary
+    overlap exists in the data) alongside the same per-fold test stats
+    Phase 7's `walk_forward_folds` already reports.
+    """
+    if len(trades) < n_folds:
+        return []
+    ordered = sorted(trades, key=lambda t: t.entry_ts)
+    start = ordered[0].entry_ts
+    end = max((t.exit_ts or t.entry_ts) for t in ordered)
+    if start >= end:
+        return []
+    edges = pd.date_range(start, end, periods=n_folds + 1)
+
+    folds: List[PurgedFold] = []
+    for i in range(n_folds):
+        fold_start, fold_end = edges[i], edges[i + 1]
+        test = [t for t in ordered if fold_start <= t.entry_ts < fold_end]
+
+        would_be_train = [t for t in ordered if not (fold_start <= t.entry_ts < fold_end)]
+        overlaps_test_window = lambda t: t.entry_ts < fold_end and (t.exit_ts or t.entry_ts) > fold_start
+        purged = [t for t in would_be_train if overlaps_test_window(t)]
+        train_after_purge = [t for t in would_be_train if not overlaps_test_window(t)]
+
+        in_embargo = lambda t: fold_end <= t.entry_ts < (fold_end + embargo)
+        embargoed = [t for t in train_after_purge if in_embargo(t)]
+        train_final = [t for t in train_after_purge if not in_embargo(t)]
+
+        folds.append(PurgedFold(
+            fold_index=i, fold_start=fold_start, fold_end=fold_end,
+            train=train_final, test=test, n_purged=len(purged), n_embargoed=len(embargoed),
+        ))
     return folds
 
 
