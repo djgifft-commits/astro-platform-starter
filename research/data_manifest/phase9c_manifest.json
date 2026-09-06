@@ -1,7 +1,7 @@
 {
   "phase": "9C-DATA",
   "manifest_version": 1,
-  "ingestion_timestamp": "2026-09-06T18:09:54.770291+00:00",
+  "ingestion_timestamp": "2026-09-06T18:32:18.086016+00:00",
   "searched_locations": [
     "/home/user/astro-platform-starter/data/historical",
     "/home/user/astro-platform-starter/data",
@@ -22,9 +22,9 @@
       "source_file": "/home/user/astro-platform-starter/data/historical/XAUUSD_M1.csv",
       "original_sha256": "3d1b0d083b1c71718dd33e8effff2a3b08b7e96a7c21f25508f02ae5ef640c02",
       "row_count": 100000,
-      "first_timestamp": "2026-05-26T16:10:00+00:00",
-      "last_timestamp": "2026-09-04T23:54:00+00:00",
-      "timezone": "normalized to UTC (source parsed with assume_naive_tz=UTC)",
+      "first_timestamp": "2026-05-26T13:10:00+00:00",
+      "last_timestamp": "2026-09-04T20:54:00+00:00",
+      "timezone": "normalized to UTC (source parsed with assume_naive_tz=+03:00)",
       "timeframe": "M1",
       "validation_result": {
         "passed": true,
@@ -95,7 +95,7 @@
           },
           "17_date_range": {
             "passed": true,
-            "detail": "2026-05-26T16:10:00+00:00 .. 2026-09-04T23:54:00+00:00 (101.3 days)"
+            "detail": "2026-05-26T13:10:00+00:00 .. 2026-09-04T20:54:00+00:00 (101.3 days)"
           },
           "18_final_candle_complete": {
             "passed": true,
@@ -123,19 +123,19 @@
       },
       "derivation_method": "research.data.loaders.resample_ohlc: label=left, closed=left, open=first/high=max/low=min/close=last, spread=mean, trailing incomplete bucket dropped",
       "or_readiness": {
-        "ny_sessions_found": 73,
-        "usable_sessions": 73,
+        "ny_sessions_found": 74,
+        "usable_sessions": 74,
         "incomplete_sessions": 0,
         "missing_0930_bar_days": [],
         "incomplete_session_days": [],
         "or_available_only_after_window_close": true,
         "sample_or": {
-          "date": "2026-05-27",
-          "or_timestamp_utc": "2026-05-27T13:45:00+00:00",
-          "or_high": 4477.19,
-          "or_low": 4462.2,
-          "or_mid": 4469.695,
-          "or_width": 14.989999999999782
+          "date": "2026-05-26",
+          "or_timestamp_utc": "2026-05-26T13:45:00+00:00",
+          "or_high": 4531.22,
+          "or_low": 4521.17,
+          "or_mid": 4526.195,
+          "or_width": 10.050000000000182
         }
       },
       "sufficiency": "LT_1_YEAR",
@@ -149,7 +149,7 @@
         "SESSION_READY": true,
         "OR_READY": true
       },
-      "ingestion_timestamp": "2026-09-06T18:09:54.770213+00:00"
+      "ingestion_timestamp": "2026-09-06T18:32:18.085896+00:00"
     }
   ],
   "problems": [],

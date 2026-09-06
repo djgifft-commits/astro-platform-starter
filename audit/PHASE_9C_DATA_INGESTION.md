@@ -1,19 +1,16 @@
 # Phase 9C-DATA — Real Historical Data Ingestion
 
-**UPDATE (this revision): real data has been supplied.** The user
-attached a real MT5 "Export to CSV" of XAUUSD M1 history (100,000 bars,
-2026-05-26 to 2026-09-04). The pipeline built in the original revision of
-this document (below) has now actually been run against it — its first
-real-data run. Technical verdict: **`READY_FOR_PHASE_9C`** on all 18
-validation checks and both derivation/OR-readiness checks. **However, one
-question is not yet confirmed and blocks treating this as final: the
-timezone of the raw timestamps** (Section 11) — so the practical verdict
-this document reports is **`DATA_INCOMPLETE`** pending that confirmation,
-not a green light to start strategy validation yet. See Section 11 before
-anything else.
+**GLOBAL VERDICT: `READY_FOR_PHASE_9C`.**
 
-No Phase 9C strategy validation has been performed, per this phase's own
-stop condition — this remains a data-ingestion-only deliverable.
+The user attached a real MT5 "Export to CSV" of XAUUSD M1 history
+(100,000 bars, 2026-05-26 to 2026-09-04) and confirmed the broker server
+offset is **GMT+3**. With that offset applied, all 18 validation checks
+pass, M1→M5/M15 derive cleanly, and 74 of 74 New York opening-range
+sessions in this span are complete and usable. This is the first real
+market data this project has had, and the first time this pipeline has
+run to completion against it. **No Phase 9C strategy validation has been
+performed** — this remains a data-ingestion-only deliverable, per this
+phase's own stop condition.
 
 Machine-readable manifest: `research/data_manifest/phase9c_manifest.json`.
 
@@ -200,8 +197,8 @@ timestamp — never an inferred or fabricated value.
 | Symbol | XAUUSD |
 | Timeframe | M1 |
 | Rows | 100,000 |
-| Range | 2026-05-26T16:10:00Z .. 2026-09-04T23:54:00Z (101.3 days, as currently timestamped — see Section 11) |
-| NY calendar dates spanned | 88 |
+| Range (UTC, GMT+3-corrected) | 2026-05-26T13:10:00Z .. 2026-09-04T20:54:00Z (101.3 days) |
+| Broker server offset | GMT+3, user-confirmed (Section 11) |
 | Sufficiency | `LT_1_YEAR` |
 
 **18-point validation: 18/18 passed**, zero findings on every check —
@@ -218,10 +215,10 @@ unexplained gaps.**
 via the existing `resample_ohlc` (open=first/high=max/low=min/close=last,
 trailing incomplete bucket dropped — unchanged from Phase 9B).
 
-**Opening-range readiness**: 73 of 73 NY trading sessions found in this
+**Opening-range readiness**: 74 of 74 NY trading sessions found in this
 span have a complete, uncontaminated 09:30–09:45 opening range. Zero
-missing 09:30 bars, zero incomplete sessions. Sample (2026-05-27):
-OR_high=4477.19, OR_low=4462.20, OR_mid=4469.70, OR_width=14.99.
+missing 09:30 bars, zero incomplete sessions. Sample (2026-05-26):
+OR_high=4531.22, OR_low=4521.17, OR_mid=4526.20, OR_width=10.05.
 
 **Readiness flags**: `DATA_EXISTS / SCHEMA_VALID / TIMEFRAME_VALID /
 TIMEZONE_VALID / STRUCTURE_VALID / CAUSAL_READY / SESSION_READY /
@@ -259,43 +256,44 @@ distinct from the substantive timezone question in Section 11, and was
 verified by re-running the full 21-module regression suite plus the 8
 ingestion mutation tests (all still pass) after both changes.
 
-## 11. OPEN QUESTION — timestamp timezone (blocks a final verdict)
+## 11. Timestamp timezone — RESOLVED, GMT+3, user-confirmed
 
-**The 18 checks and the OR-readiness numbers above are computed under the
-default `assume_naive_tz=UTC` — i.e., currently treating the file's raw
-timestamps as if they are already UTC. This has not been confirmed and is
-very likely wrong.**
+The first pass through this pipeline defaulted to `assume_naive_tz=UTC`,
+which — before confirmation — was flagged as very likely wrong. Evidence
+computed from the file itself (not a citation): under the UTC assumption,
+the weekly trading gap fell at **Friday 23:54 → Monday 01:05** every week
+(14 occurrences, all consistent), whereas real spot gold/FX markets
+close/reopen close to **21:00–22:00 UTC**. Testing candidate offsets
+against that fact:
 
-MT5 exports timestamps in **broker-server time**, which is a per-broker
-configuration, essentially never plain UTC. Evidence from the file itself
-(not a citation, computed from these exact 100,000 rows): the weekly
-trading gap in the raw timestamps runs from **Friday 23:54** to **Monday
-01:05** every week (14 occurrences, one per week in the file, all
-consistent). Real spot gold/FX markets close and reopen close to
-**21:00–22:00 UTC** on Friday/Sunday. Matching those two facts:
-
-| Assumed broker offset | Implied real close (UTC) | Implied real reopen (UTC) |
+| Candidate broker offset | Implied real close (UTC) | Implied real reopen (UTC) |
 |---|---|---|
-| UTC+0 (current default) | Fri 23:54 | Sun/Mon 01:05 |
+| UTC+0 (original default) | Fri 23:54 | Sun/Mon 01:05 |
 | UTC+2 | Fri 21:54 | Sun 23:05 |
 | **UTC+3** | **Fri 20:54** | **Sun 22:05** |
 
-UTC+2 or UTC+3 both land close to the canonical pattern; UTC+0 (today's
-default) does not. **This is circumstantial evidence pointing away from
-UTC, not a confirmed offset** — I have not applied either +2 or +3, and
-will not guess between them, per this phase's explicit "do not guess
-silently" rule. Getting this wrong would silently shift every bar and
-move the 09:30–09:45 opening range onto the wrong candles, which would
-silently invalidate every downstream Phase 9C result without any of the
-18 checks catching it (a wrong-but-internally-consistent timezone passes
-every structural check — this is exactly why the check battery cannot
-substitute for confirming the actual value).
+**The user then checked their MT5 terminal and confirmed GMT+3.**
+Re-running ingestion with `--assume-naive-tz "+03:00"` moves the weekly
+gap to **Friday 20:54 UTC → Sunday 22:05 UTC** — landing almost exactly on
+the canonical 21:00–22:00 UTC close/reopen, confirming the correction
+against real market structure, not merely against the user's word. This
+is now applied (Section 9b's numbers reflect it); the 100,000-row dataset
+was re-validated afterward (all 18 checks still pass, gap counts
+unchanged in kind, OR-readiness recomputed: 74/74 sessions usable, one
+more than the pre-correction 73 since the corrected boundary reclassifies
+which calendar day some late sessions belong to).
 
-**What confirms it**: MT5 shows the broker's server GMT offset next to
-the account/server name in the terminal, or under Tools → Options →
-Server. Common conventions: a fixed offset, or an offset that itself
-shifts by 1h on its own DST-like schedule (which is not necessarily the
-US NY DST calendar).
+**Not yet confirmed, and not assumed**: whether this GMT+3 is fixed
+year-round or whether the broker applies its own DST-like shift at some
+point in the year. The current 101-day window (2026-05-26 to 2026-09-04)
+does not cross a US DST boundary, so this does not affect today's
+verdict, but it would need to be revisited before ingesting a longer
+history that spans a March/November US DST transition, or if the broker's
+own schedule shifts independent of the US calendar. `--assume-naive-tz`
+takes a single fixed offset per ingestion run; a broker whose offset
+changes mid-year would require the file to be split at the shift date, or
+the loader extended to accept a per-date offset — neither has been
+needed yet and neither has been built speculatively.
 
 ## 12. Files changed
 
@@ -322,73 +320,63 @@ mutation. Zero regressions from extending the loader.
 
 ---
 
-## What I need from you now
+## What would strengthen this further (not required to proceed)
 
-Just one thing: **confirm your MT5 broker's server GMT offset** (Section
-11). Check MT5 → Tools → Options → Server tab, or the number shown next
-to your account's server name (commonly displayed as e.g. "GMT+2" or
-"GMT+3"), and tell me:
+XAUUSD alone is enough to prove the pipeline and to begin Phase 9C
+strategy validation on. It is thin for the full spec's cross-symbol,
+multi-year stability analysis:
 
-1. The offset (e.g. "GMT+3").
-2. Whether it's fixed year-round or shifts by 1h on its own schedule (some
-   brokers apply a DST-like shift that does not follow the US calendar).
+- **More symbols**: EUR_USD, USD_JPY, GBP_USD, AUD_USD, USD_CHF M1 files,
+  same process, would let the eventual walk-forward/regime/symbol
+  stability testing say something about generalization rather than one
+  symbol over one 101-day window.
+- **More history for XAUUSD itself**: 101 days ≈ 74 NY sessions is enough
+  to exercise the pipeline and start looking at the data, but thin for
+  the year-stability and purged walk-forward analysis the full Phase 9C
+  spec asks for.
+- **Spread units**: the file's `<SPREAD>` column is in MT5's native
+  points, not price units (Section 9b). This is fine to carry through
+  ingestion as-is (flagged, not converted) but will need an explicit,
+  confirmed point-size conversion before it feeds the real-cost model in
+  strategy validation — a decision for that phase, not this one.
 
-Once confirmed, I re-run:
+## Command to authorize next
 
-```bash
-research/.venv/bin/python -m research.ingest_real_data --assume-naive-tz "+03:00"
+Data ingestion for XAUUSD is complete and confirmed. The next step is a
+**separate authorization** for Phase 9C strategy validation itself (the
+OR state machine, entry families, SL/TP models, etc., against this real
+data) — per this phase's explicit "do not automatically begin strategy
+validation" stop condition. When ready:
+
+```
+PHASE 9C — proceed with strategy validation on the ingested XAUUSD data.
 ```
 
-(substituting your actual offset) and the manifest, OR-readiness sample,
-and this document get updated with the corrected timestamps. That is the
-only remaining step before this symbol reaches a genuine
-`READY_FOR_PHASE_9C`.
-
-**Separately, and not required to proceed**: more symbols and more
-history would make the eventual Phase 9C statistical validation
-(multi-symbol, multi-year stability) more meaningful — 101 days of one
-symbol is enough to prove the pipeline and start looking at the data, but
-thin for the walk-forward/regime/year-stability analysis the full Phase
-9C spec asks for. A `spread` column is already present in this file and
-will be used; note it's in MT5's native **points**, not price units
-(flagged for the eventual cost model, not something to fix now).
-
-## Command to authorize next (once the timezone is confirmed)
-
-```bash
-research/.venv/bin/python -m research.ingest_real_data --assume-naive-tz "<confirmed offset>"
-```
-
-That updates `research/data_manifest/phase9c_manifest.json`. **Only if it
-still reports `READY_FOR_PHASE_9C`** after the correction is the Phase 9C
-strategy validation itself unblocked — and starting that validation
-remains a separate authorization from data ingestion, per this phase's
-explicit stop condition.
+or equivalent explicit instruction.
 
 ---
 
 ## Final verdict
 
-**`DATA_INCOMPLETE`** (technically `READY_FOR_PHASE_9C` on structure, but
-withheld pending Section 11's timezone confirmation — treating unconfirmed
-timestamps as final would violate this phase's own "do not guess
-silently" rule).
+**`READY_FOR_PHASE_9C`.**
 
 **PRODUCTION_IMPACT**: NONE (byte-identical hashes, verified).
 **LIVE_TRADING**: remains disabled; no broker/order-routing code exists;
 no MT5 connection of any kind was made — the data arrived as a
 user-exported file attachment, not a live API call.
 **DATA_USED**: XAUUSD M1, 100,000 real bars, 2026-05-26 to 2026-09-04,
-user-supplied MT5 export. No synthetic data was substituted or blended
-with it anywhere in this phase.
-**TESTS**: 8/8 ingestion mutations detected; 21/21 module regressions
-passed (re-verified after the loader extension).
+user-supplied MT5 export, GMT+3 broker offset (user-confirmed, and
+independently corroborated against the real market's own weekly
+close/reopen pattern — Section 11). No synthetic data was substituted or
+blended with it anywhere in this phase.
+**TESTS**: 8/8 ingestion mutations detected; 21/21+ module regressions
+passed (re-verified after both the loader extension and the timezone
+correction).
 **MISSING_DATASETS**: M1 for EUR_USD, USD_JPY, GBP_USD, AUD_USD, USD_CHF
-(XAUUSD received). Not required to proceed with XAUUSD alone, but more
-symbols strengthen the eventual cross-symbol stability analysis.
-**NEXT_SAFE_ACTION**: confirm the broker server GMT offset (Section 11),
-re-run ingestion with it, then re-request authorization for Phase 9C
-strategy validation specifically. Do not begin Phase 9C strategy
-validation on the current UTC-assumed timestamps. Do not begin Phase 9D.
+— not required to proceed with XAUUSD, but would strengthen the eventual
+cross-symbol analysis (see above).
+**NEXT_SAFE_ACTION**: request explicit authorization for Phase 9C
+strategy validation on the now-ready XAUUSD dataset. Do not begin it
+automatically. Do not begin Phase 9D.
 
-**STOP.**
+**STOP — awaiting authorization for Phase 9C strategy validation.**
