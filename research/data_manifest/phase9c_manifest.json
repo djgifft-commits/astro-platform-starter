@@ -1,0 +1,24 @@
+{
+  "phase": "9C-DATA",
+  "manifest_version": 1,
+  "ingestion_timestamp": "2026-09-06T16:40:14.662696+00:00",
+  "searched_locations": [
+    "/home/user/astro-platform-starter/data/historical",
+    "/home/user/astro-platform-starter/data",
+    "/home/user/astro-platform-starter/research/data/historical",
+    "/mnt/user-data/working",
+    "/mnt/attach"
+  ],
+  "data_policy": "REAL DATA ONLY. No synthetic substitution, no gap filling, no interpolation.",
+  "opening_range_definition": {
+    "session_open_local": "09:30",
+    "timezone": "America/New_York",
+    "or_minutes": 15,
+    "dst_handling": "per-date zoneinfo conversion (never a fixed UTC offset)"
+  },
+  "datasets": [],
+  "problems": [
+    "NO_DATA_FILES_FOUND: no .csv/.txt/.parquet files under /home/user/astro-platform-starter/data/historical, /home/user/astro-platform-starter/data, /home/user/astro-platform-starter/research/data/historical, /mnt/user-data/working, /mnt/attach"
+  ],
+  "global_verdict": "REAL_DATA_NOT_SUPPLIED"
+}

@@ -26,5 +26,9 @@ research/.venv/
 research/results/
 research/results_8/
 research/results_9b/
+# Real historical market data is frequently licensed and is never committed.
+# The drop-location README and the generated manifest ARE tracked.
+data/historical/*
+!data/historical/README.md
 __pycache__/
 *.pyc
