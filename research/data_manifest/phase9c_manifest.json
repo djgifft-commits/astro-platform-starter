@@ -1,7 +1,7 @@
 {
   "phase": "9C-DATA",
   "manifest_version": 1,
-  "ingestion_timestamp": "2026-09-06T16:40:14.662696+00:00",
+  "ingestion_timestamp": "2026-09-06T16:48:03.084957+00:00",
   "searched_locations": [
     "/home/user/astro-platform-starter/data/historical",
     "/home/user/astro-platform-starter/data",
