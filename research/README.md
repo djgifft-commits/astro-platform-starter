@@ -1,10 +1,20 @@
-# Research / Backtesting Sandbox (Phase 7)
+# Research / Backtesting Sandbox (Phase 7 + Phase 8)
 
 **This is a standalone research project living inside the
 `astro-platform-starter` repository. It has no connection to the Astro
 site, no MT5/broker integration, and no live trading capability.** See
-`audit/PHASE_7_MULTI_STRATEGY_HEDGE_BACKTEST.md` for the full research
-report and `audit/RESEARCH_CARDS.md` for the external-research basis.
+`audit/PHASE_7_MULTI_STRATEGY_HEDGE_BACKTEST.md` and `audit/
+PHASE_8_REAL_DATA_MULTI_STRATEGY_HEDGE_BACKTEST.md` for the full research
+reports, `audit/RESEARCH_CARDS.md` + `audit/PHASE_8B_EXTERNAL_RESEARCH.md`
+for the external-research basis, and `audit/
+PHASE_8A_ARCHITECTURE_AUDIT.md` for why Phase 8 still runs on synthetic
+data (no real historical data is reachable from this environment — see
+that document for the direct evidence).
+
+Run `research/.venv/bin/python -m research.run_experiments_phase8` to
+regenerate `research/results_8/` (the Phase 8 artifacts the web terminal's
+`[P8]`-prefixed tabs read), in addition to the `run_experiments`
+instructions below for the Phase 7 artifacts.
 
 ## Why this exists
 
