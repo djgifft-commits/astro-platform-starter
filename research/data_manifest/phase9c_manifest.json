@@ -1,7 +1,7 @@
 {
   "phase": "9C-DATA",
   "manifest_version": 1,
-  "ingestion_timestamp": "2026-09-06T16:48:03.084957+00:00",
+  "ingestion_timestamp": "2026-09-06T18:09:54.770291+00:00",
   "searched_locations": [
     "/home/user/astro-platform-starter/data/historical",
     "/home/user/astro-platform-starter/data",
@@ -16,9 +16,142 @@
     "or_minutes": 15,
     "dst_handling": "per-date zoneinfo conversion (never a fixed UTC offset)"
   },
-  "datasets": [],
-  "problems": [
-    "NO_DATA_FILES_FOUND: no .csv/.txt/.parquet files under /home/user/astro-platform-starter/data/historical, /home/user/astro-platform-starter/data, /home/user/astro-platform-starter/research/data/historical, /mnt/user-data/working, /mnt/attach"
+  "datasets": [
+    {
+      "symbol": "XAUUSD",
+      "source_file": "/home/user/astro-platform-starter/data/historical/XAUUSD_M1.csv",
+      "original_sha256": "3d1b0d083b1c71718dd33e8effff2a3b08b7e96a7c21f25508f02ae5ef640c02",
+      "row_count": 100000,
+      "first_timestamp": "2026-05-26T16:10:00+00:00",
+      "last_timestamp": "2026-09-04T23:54:00+00:00",
+      "timezone": "normalized to UTC (source parsed with assume_naive_tz=UTC)",
+      "timeframe": "M1",
+      "validation_result": {
+        "passed": true,
+        "checks": {
+          "1_file_integrity": {
+            "passed": true,
+            "detail": "100000 rows loaded from /home/user/astro-platform-starter/data/historical/XAUUSD_M1.csv"
+          },
+          "2_sha256": {
+            "passed": true,
+            "detail": "source file sha256=3d1b0d083b1c71718dd33e8effff2a3b08b7e96a7c21f25508f02ae5ef640c02"
+          },
+          "3_schema": {
+            "passed": true,
+            "detail": "columns=['close', 'high', 'low', 'open', 'spread', 'volume']"
+          },
+          "4_timestamp_type": {
+            "passed": true,
+            "detail": "index type=DatetimeIndex"
+          },
+          "5_timezone": {
+            "passed": true,
+            "detail": "index tz=UTC (normalized to UTC by the loader)"
+          },
+          "6_monotonic": {
+            "passed": true,
+            "detail": "index monotonically increasing"
+          },
+          "7_no_duplicates": {
+            "passed": true,
+            "detail": "0 duplicate timestamps"
+          },
+          "8_missing_timestamps": {
+            "passed": true,
+            "detail": "gap counts={'EXPECTED_SESSION_GAP': 60, 'WEEKEND_GAP': 14, 'HOLIDAY_GAP': 0, 'DATA_GAP': 0, 'UNKNOWN_GAP': 0} (DATA_GAP+UNKNOWN_GAP=0, never filled)"
+          },
+          "9_ohlc_invariants": {
+            "passed": true,
+            "detail": "0 high/low invariant violations"
+          },
+          "10_positive_prices": {
+            "passed": true,
+            "detail": "0 bars with a zero/negative price"
+          },
+          "11_no_nan": {
+            "passed": true,
+            "detail": "0 bars containing NaN in OHLC"
+          },
+          "12_no_infinity": {
+            "passed": true,
+            "detail": "0 bars containing +/-inf in OHLC"
+          },
+          "13_no_impossible_candles": {
+            "passed": true,
+            "detail": "0 single-bar moves >20%"
+          },
+          "14_session_continuity": {
+            "passed": true,
+            "detail": "88 distinct NY calendar dates spanned"
+          },
+          "15_symbol_identity": {
+            "passed": true,
+            "detail": "symbol=XAUUSD"
+          },
+          "16_timeframe_identity": {
+            "passed": true,
+            "detail": "declared=M1, observed modal spacing=M1"
+          },
+          "17_date_range": {
+            "passed": true,
+            "detail": "2026-05-26T16:10:00+00:00 .. 2026-09-04T23:54:00+00:00 (101.3 days)"
+          },
+          "18_final_candle_complete": {
+            "passed": true,
+            "detail": "final bar spacing=1.0min vs expected 1min (a shorter trailing spacing indicates a still-forming last bar)"
+          }
+        },
+        "failed_checks": []
+      },
+      "gap_summary": {
+        "counts": {
+          "EXPECTED_SESSION_GAP": 60,
+          "WEEKEND_GAP": 14,
+          "HOLIDAY_GAP": 0,
+          "DATA_GAP": 0,
+          "UNKNOWN_GAP": 0
+        },
+        "examples": {
+          "DATA_GAP": [],
+          "UNKNOWN_GAP": []
+        }
+      },
+      "derived_timeframes": {
+        "M5": 20002,
+        "M15": 6717
+      },
+      "derivation_method": "research.data.loaders.resample_ohlc: label=left, closed=left, open=first/high=max/low=min/close=last, spread=mean, trailing incomplete bucket dropped",
+      "or_readiness": {
+        "ny_sessions_found": 73,
+        "usable_sessions": 73,
+        "incomplete_sessions": 0,
+        "missing_0930_bar_days": [],
+        "incomplete_session_days": [],
+        "or_available_only_after_window_close": true,
+        "sample_or": {
+          "date": "2026-05-27",
+          "or_timestamp_utc": "2026-05-27T13:45:00+00:00",
+          "or_high": 4477.19,
+          "or_low": 4462.2,
+          "or_mid": 4469.695,
+          "or_width": 14.989999999999782
+        }
+      },
+      "sufficiency": "LT_1_YEAR",
+      "readiness": {
+        "DATA_EXISTS": true,
+        "SCHEMA_VALID": true,
+        "TIMEFRAME_VALID": true,
+        "TIMEZONE_VALID": true,
+        "STRUCTURE_VALID": true,
+        "CAUSAL_READY": true,
+        "SESSION_READY": true,
+        "OR_READY": true
+      },
+      "ingestion_timestamp": "2026-09-06T18:09:54.770213+00:00"
+    }
   ],
-  "global_verdict": "REAL_DATA_NOT_SUPPLIED"
+  "problems": [],
+  "global_verdict": "READY_FOR_PHASE_9C"
 }

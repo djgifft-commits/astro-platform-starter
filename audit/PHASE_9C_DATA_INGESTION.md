@@ -1,12 +1,19 @@
 # Phase 9C-DATA — Real Historical Data Ingestion
 
-**GLOBAL VERDICT: `REAL_DATA_NOT_SUPPLIED`.**
+**UPDATE (this revision): real data has been supplied.** The user
+attached a real MT5 "Export to CSV" of XAUUSD M1 history (100,000 bars,
+2026-05-26 to 2026-09-04). The pipeline built in the original revision of
+this document (below) has now actually been run against it — its first
+real-data run. Technical verdict: **`READY_FOR_PHASE_9C`** on all 18
+validation checks and both derivation/OR-readiness checks. **However, one
+question is not yet confirmed and blocks treating this as final: the
+timezone of the raw timestamps** (Section 11) — so the practical verdict
+this document reports is **`DATA_INCOMPLETE`** pending that confirmation,
+not a green light to start strategy validation yet. See Section 11 before
+anything else.
 
-No real historical market data exists in this environment. The ingestion
-pipeline this phase specifies has been built, tested, and is waiting; it
-has never been run against real data because there is none to run against.
-**No Phase 9C strategy validation was performed**, per this phase's own
-stop condition.
+No Phase 9C strategy validation has been performed, per this phase's own
+stop condition — this remains a data-ingestion-only deliverable.
 
 Machine-readable manifest: `research/data_manifest/phase9c_manifest.json`.
 
@@ -157,7 +164,7 @@ classifier flags the fixture's 4 deliberate overnight holes as `DATA_GAP`
 This matters: it makes `REAL_DATA_NOT_SUPPLIED` provably a statement about
 missing data, not about broken code.
 
-## 9. Per-symbol readiness — all datasets missing
+## 9. Per-symbol readiness (as of the original, data-free revision)
 
 | Symbol | DATA_EXISTS | SCHEMA_VALID | TIMEFRAME_VALID | TIMEZONE_VALID | STRUCTURE_VALID | CAUSAL_READY | SESSION_READY | OR_READY |
 |---|---|---|---|---|---|---|---|---|
@@ -168,88 +175,220 @@ missing data, not about broken code.
 | AUD_USD | ✗ | — | — | — | — | — | — | — |
 | USD_CHF | ✗ | — | — | — | — | — | — | — |
 
-Years available: **0**. M1 rows: **0**. M5 rows: **0**. M15 rows: **0**.
-NY sessions available: **0**. Usable sessions: **0**. Sufficiency: **not
-assessable**.
+Superseded by Section 9b for XAUUSD.
 
-## 10. Files changed
+## 9b. Real data received and ingested — XAUUSD
 
-New: `research/data/ingestion.py`, `research/ingest_real_data.py`,
+The user attached `XAUUSD_M1_.csv`, a native MT5 History Center export
+(SHA-256 `3d1b0d08…`), copied byte-identically to
+`data/historical/XAUUSD_M1.csv` (verified: source and copy hash equal).
+
+**Format**: tab-delimited, `<DATE>	<TIME>	<OPEN>	<HIGH>	<LOW>	<CLOSE>	<TICKVOL>	<VOL>	<SPREAD>`
+header, `\r\n` line endings, dates as `YYYY.MM.DD`, `<DATE>`/`<TIME>` in
+separate columns. This is a genuinely different shape from the loader's
+original comma-delimited/single-`timestamp`-column assumption, so
+`research/data/real_data.py::load_real_ohlcv` was extended (Section 10)
+to parse it. Every extension is a lossless, deterministic rearrangement
+of the vendor's own fields — delimiter auto-detection, bracket-stripping,
+and concatenating the vendor's own `<DATE>` + `<TIME>` columns into one
+timestamp — never an inferred or fabricated value.
+
+**Ingested dataset**:
+
+| Field | Value |
+|---|---|
+| Symbol | XAUUSD |
+| Timeframe | M1 |
+| Rows | 100,000 |
+| Range | 2026-05-26T16:10:00Z .. 2026-09-04T23:54:00Z (101.3 days, as currently timestamped — see Section 11) |
+| NY calendar dates spanned | 88 |
+| Sufficiency | `LT_1_YEAR` |
+
+**18-point validation: 18/18 passed**, zero findings on every check —
+zero duplicates, zero OHLC-invariant violations, zero NaN/inf, zero
+impossible candles, correct symbol/timeframe identity, monotonic index,
+complete final candle. This is an unusually clean feed.
+
+**Gap classification**: `{EXPECTED_SESSION_GAP: 60, WEEKEND_GAP: 14,
+HOLIDAY_GAP: 0, DATA_GAP: 0, UNKNOWN_GAP: 0}` — **every gap in the file is
+accounted for as an expected daily/weekly market closure; zero
+unexplained gaps.**
+
+**M1 → M5/M15 derivation**: 100,000 M1 → 20,002 M5 bars → 6,717 M15 bars,
+via the existing `resample_ohlc` (open=first/high=max/low=min/close=last,
+trailing incomplete bucket dropped — unchanged from Phase 9B).
+
+**Opening-range readiness**: 73 of 73 NY trading sessions found in this
+span have a complete, uncontaminated 09:30–09:45 opening range. Zero
+missing 09:30 bars, zero incomplete sessions. Sample (2026-05-27):
+OR_high=4477.19, OR_low=4462.20, OR_mid=4469.70, OR_width=14.99.
+
+**Readiness flags**: `DATA_EXISTS / SCHEMA_VALID / TIMEFRAME_VALID /
+TIMEZONE_VALID / STRUCTURE_VALID / CAUSAL_READY / SESSION_READY /
+OR_READY` — **all eight true.** The ingester's own `global_verdict`
+therefore computed `READY_FOR_PHASE_9C`.
+
+## 10. Loader extension for MT5's native export format
+
+`research/data/real_data.py::load_real_ohlcv` gained three additions,
+none of which touch strategy, entry, SL/TP, risk, or hedge code:
+
+1. **Delimiter auto-detection** (`sep=None, engine="python"`) instead of
+   assuming comma — MT5's own CSV export is tab-delimited.
+2. **Header normalization** strips `<>` in addition to the existing
+   whitespace/lowercase normalization (`<TICKVOL>` → `tickvol` →
+   recognized as an alias for `volume`, alongside the existing
+   `tick_volume` alias).
+3. **Date+time concatenation**: when no single `timestamp` column exists
+   but `date` and `time` do, they are concatenated verbatim
+   (`"2026.05.26" + " " + "16:10:00"`) before parsing — the vendor's own
+   two fields combined losslessly, not a new value.
+4. **Fixed-offset timezone strings**: `assume_naive_tz` now also accepts
+   `"+02:00"`/`"-5"`-style fixed offsets, not only IANA zone names — MT5
+   describes broker-server time to users as "GMT+N", not as an IANA zone,
+   and forcing a guessed IANA name would be exactly the kind of silent
+   guess this phase prohibits.
+
+A pre-existing bug was also found and fixed while wiring this up:
+`research/data/ingestion.py::discover_data_files` double-counted the same
+file when two configured search directories nested (`data/` and
+`data/historical/`), because it deduplicated nothing. Fixed by
+deduplicating on each file's resolved absolute path. This is a real
+ingestion-mechanics bug fix (files should never be double-ingested),
+distinct from the substantive timezone question in Section 11, and was
+verified by re-running the full 21-module regression suite plus the 8
+ingestion mutation tests (all still pass) after both changes.
+
+## 11. OPEN QUESTION — timestamp timezone (blocks a final verdict)
+
+**The 18 checks and the OR-readiness numbers above are computed under the
+default `assume_naive_tz=UTC` — i.e., currently treating the file's raw
+timestamps as if they are already UTC. This has not been confirmed and is
+very likely wrong.**
+
+MT5 exports timestamps in **broker-server time**, which is a per-broker
+configuration, essentially never plain UTC. Evidence from the file itself
+(not a citation, computed from these exact 100,000 rows): the weekly
+trading gap in the raw timestamps runs from **Friday 23:54** to **Monday
+01:05** every week (14 occurrences, one per week in the file, all
+consistent). Real spot gold/FX markets close and reopen close to
+**21:00–22:00 UTC** on Friday/Sunday. Matching those two facts:
+
+| Assumed broker offset | Implied real close (UTC) | Implied real reopen (UTC) |
+|---|---|---|
+| UTC+0 (current default) | Fri 23:54 | Sun/Mon 01:05 |
+| UTC+2 | Fri 21:54 | Sun 23:05 |
+| **UTC+3** | **Fri 20:54** | **Sun 22:05** |
+
+UTC+2 or UTC+3 both land close to the canonical pattern; UTC+0 (today's
+default) does not. **This is circumstantial evidence pointing away from
+UTC, not a confirmed offset** — I have not applied either +2 or +3, and
+will not guess between them, per this phase's explicit "do not guess
+silently" rule. Getting this wrong would silently shift every bar and
+move the 09:30–09:45 opening range onto the wrong candles, which would
+silently invalidate every downstream Phase 9C result without any of the
+18 checks catching it (a wrong-but-internally-consistent timezone passes
+every structural check — this is exactly why the check battery cannot
+substitute for confirming the actual value).
+
+**What confirms it**: MT5 shows the broker's server GMT offset next to
+the account/server name in the terminal, or under Tools → Options →
+Server. Common conventions: a fixed offset, or an offset that itself
+shifts by 1h on its own DST-like schedule (which is not necessarily the
+US NY DST calendar).
+
+## 12. Files changed
+
+New: `data/historical/XAUUSD_M1.csv` (gitignored, not committed — see
+`.gitignore`), `research/data/ingestion.py`, `research/ingest_real_data.py`,
 `research/data/ingestion_mutation_tests.py`, `data/historical/README.md`,
 `research/data_manifest/phase9c_manifest.json`, this document.
 Modified: `.gitignore` (ignore `data/historical/*` — real vendor data is
 frequently licensed and must never be committed — while keeping the README
-and manifest tracked).
+and manifest tracked), `research/data/real_data.py` (loader extension,
+Section 10).
 
 **Unchanged**: every strategy, entry, SL, TP, risk, hedge, execution, and
-production file.
+production file (re-verified: `git diff --stat` against those paths is
+empty, production hashes byte-identical).
+
+## 13. Regression after the loader change
+
+21/21 module self-tests re-run and passing (unchanged from the original
+revision's Section 7, plus `research.data.real_data` re-verified since it
+was the file actually modified), and all 15 Phase 8/9B strategy-layer
+mutation tests plus all 8 ingestion mutation tests still detect their
+mutation. Zero regressions from extending the loader.
 
 ---
 
-## What I need from you
+## What I need from you now
 
-Drop the files into `data/historical/` and run one command. Concretely:
+Just one thing: **confirm your MT5 broker's server GMT offset** (Section
+11). Check MT5 → Tools → Options → Server tab, or the number shown next
+to your account's server name (commonly displayed as e.g. "GMT+2" or
+"GMT+3"), and tell me:
 
-1. **M1 (1-minute) OHLCV history** for at least one of `EURUSD`,
-   `USDJPY`, `GBPUSD`, `XAUUSD`, `AUDUSD`, `USDCHF`. M1 is the important
-   one — M5 and M15 are derived from it, and the strategy's 1-minute
-   entry-trigger layer cannot be evaluated without it.
-2. **Filenames that state symbol and timeframe** — e.g. `eurusd_m1.csv`,
-   `xauusd_m1_2019_2024.parquet`. Unrecognized names are reported, not
-   guessed.
-3. **Columns** `timestamp, open, high, low, close` (plus `volume`/
-   `spread` if you have them). A `spread` column materially improves the
-   cost model — without it, cost sensitivity falls back to assumptions
-   rather than your broker's real spreads.
-4. **Tell me the timezone if timestamps have no UTC offset.** MT5 exports
-   are typically broker-server time, not UTC. Getting this wrong shifts
-   every bar and moves the opening range onto the wrong candles.
-5. **As much history as you have.** 1 year ≈ 250 NY sessions, which is
-   thin for per-regime/per-year stability testing; 3+ years across
-   several symbols is what makes the walk-forward and
-   multiple-testing-corrected analysis meaningful.
+1. The offset (e.g. "GMT+3").
+2. Whether it's fixed year-round or shifts by 1h on its own schedule (some
+   brokers apply a DST-like shift that does not follow the US calendar).
 
-Typical sources you can export from yourself: MT5 (History Center →
-Export), your broker's data export, or a purchased/licensed vendor
-dataset. I cannot fetch any of these — the network probe in
-`audit/PHASE_9C_REAL_DATA_VALIDATION.md` showed every historical-data host
-is blocked by org policy at the gateway, and routing around that is not
-something I will attempt.
-
-## Command to authorize next
-
-Once files are in `data/historical/`:
+Once confirmed, I re-run:
 
 ```bash
-research/.venv/bin/python -m research.ingest_real_data
+research/.venv/bin/python -m research.ingest_real_data --assume-naive-tz "+03:00"
 ```
 
-(or `--dir /path/to/data` if you put them elsewhere; add
-`--assume-naive-tz <IANA zone>` if your timestamps carry no offset).
+(substituting your actual offset) and the manifest, OR-readiness sample,
+and this document get updated with the corrected timestamps. That is the
+only remaining step before this symbol reaches a genuine
+`READY_FOR_PHASE_9C`.
 
-That prints a per-symbol readiness table and writes
-`research/data_manifest/phase9c_manifest.json`. **If and only if it
-reports `READY_FOR_PHASE_9C`** is the Phase 9C strategy validation
-unblocked — and that remains a separate authorization.
+**Separately, and not required to proceed**: more symbols and more
+history would make the eventual Phase 9C statistical validation
+(multi-symbol, multi-year stability) more meaningful — 101 days of one
+symbol is enough to prove the pipeline and start looking at the data, but
+thin for the walk-forward/regime/year-stability analysis the full Phase
+9C spec asks for. A `spread` column is already present in this file and
+will be used; note it's in MT5's native **points**, not price units
+(flagged for the eventual cost model, not something to fix now).
+
+## Command to authorize next (once the timezone is confirmed)
+
+```bash
+research/.venv/bin/python -m research.ingest_real_data --assume-naive-tz "<confirmed offset>"
+```
+
+That updates `research/data_manifest/phase9c_manifest.json`. **Only if it
+still reports `READY_FOR_PHASE_9C`** after the correction is the Phase 9C
+strategy validation itself unblocked — and starting that validation
+remains a separate authorization from data ingestion, per this phase's
+explicit stop condition.
 
 ---
 
 ## Final verdict
 
-**`REAL_DATA_NOT_SUPPLIED`.**
+**`DATA_INCOMPLETE`** (technically `READY_FOR_PHASE_9C` on structure, but
+withheld pending Section 11's timezone confirmation — treating unconfirmed
+timestamps as final would violate this phase's own "do not guess
+silently" rule).
 
 **PRODUCTION_IMPACT**: NONE (byte-identical hashes, verified).
-**LIVE_TRADING**: remains disabled; no broker/order-routing code exists.
-**DATA_USED**: none — no real data exists, and no synthetic data was
-substituted anywhere in this phase. The only fixtures are hand-built
-deterministic test vectors used to prove ingestion mechanics, which
-produce no research result.
+**LIVE_TRADING**: remains disabled; no broker/order-routing code exists;
+no MT5 connection of any kind was made — the data arrived as a
+user-exported file attachment, not a live API call.
+**DATA_USED**: XAUUSD M1, 100,000 real bars, 2026-05-26 to 2026-09-04,
+user-supplied MT5 export. No synthetic data was substituted or blended
+with it anywhere in this phase.
 **TESTS**: 8/8 ingestion mutations detected; 21/21 module regressions
-passed.
-**MISSING_DATASETS**: M1 for all 6 preferred symbols (M5/M15 derivable
-from M1, so M1 alone unblocks a symbol).
-**NEXT_SAFE_ACTION**: supply M1 files to `data/historical/` and run the
-ingestion command above. Do not begin Phase 9C strategy validation. Do
-not begin Phase 9D.
+passed (re-verified after the loader extension).
+**MISSING_DATASETS**: M1 for EUR_USD, USD_JPY, GBP_USD, AUD_USD, USD_CHF
+(XAUUSD received). Not required to proceed with XAUUSD alone, but more
+symbols strengthen the eventual cross-symbol stability analysis.
+**NEXT_SAFE_ACTION**: confirm the broker server GMT offset (Section 11),
+re-run ingestion with it, then re-request authorization for Phase 9C
+strategy validation specifically. Do not begin Phase 9C strategy
+validation on the current UTC-assumed timestamps. Do not begin Phase 9D.
 
 **STOP.**

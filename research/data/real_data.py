@@ -1,15 +1,11 @@
 """
-Phase 8C — Real historical-data engine.
+Phase 8C / 9C-DATA — Real historical-data engine.
 
-THIS PROJECT HAS NO REAL DATA IN THIS SESSION. See
-audit/PHASE_8A_ARCHITECTURE_AUDIT.md Section 4 for the direct evidence
-(filesystem search + 5-host network probe, all rejected by this session's
-egress policy). This module is a real-data-CAPABLE loader built and
-proven against a synthetic fixture ONLY, exactly under Phase 8C's own
-carve-out: "Synthetic data ONLY for infrastructure/unit tests. Do not mix
-synthetic and real results." It has never been run against real data, and
-nothing produced by it in this session should be read as a real-market
-number -- only as a demonstration that the loader mechanics work.
+First used against real user-supplied data in Phase 9C-DATA (see
+audit/PHASE_9C_DATA_INGESTION.md); prior phases had no real data available
+in-session (audit/PHASE_8A_ARCHITECTURE_AUDIT.md Section 4,
+audit/PHASE_9C_REAL_DATA_VALIDATION.md) and this loader was proven only
+against synthetic fixtures until then.
 
 Expected input schema (CSV or Parquet), one file per symbol+timeframe or
 one long file with a `symbol` column:
@@ -17,16 +13,29 @@ one long file with a `symbol` column:
     timestamp   (ISO-8601 or epoch seconds; any standard tz or naive-as-UTC)
     open, high, low, close    (float, required)
     volume | tick_volume       (float, optional)
-    spread                      (float, optional, in price units)
+    spread                      (float, optional, in BROKER-NATIVE units --
+                                 MT5's own <SPREAD> export is in points, not
+                                 price units; see extended_quality_audit's
+                                 note on this, never silently converted)
     symbol                       (string, required if multi-symbol file)
 
-If your export uses different column names (e.g. MT5's "time", "tick_volume",
-"real_volume"), pass `column_map` to `load_real_ohlcv`.
+Also accepts MT5's native "Export to CSV" shape directly: tab-delimited,
+"<DATE>"/"<TIME>"/"<TICKVOL>"-style headers, date+time in separate
+columns -- detected and normalized automatically (delimiter sniffing,
+bracket-stripping, date+time concatenation), never guessed or fabricated,
+since every step is a lossless rearrangement of the vendor's own fields.
+`assume_naive_tz` accepts either an IANA zone name or a plain fixed offset
+like "+02:00" (MT5 broker-server time is conventionally described to
+users as "GMT+N", not an IANA zone). For any other column-naming
+mismatch, pass `column_map` to `load_real_ohlcv`.
 """
 from __future__ import annotations
 
 import dataclasses
 import hashlib
+import re
+from datetime import timedelta
+from datetime import timezone as dt_timezone
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -42,6 +51,25 @@ OPTIONAL_COLUMNS = {"volume", "tick_volume", "spread", "symbol"}
 
 class RealDataSchemaError(ValueError):
     pass
+
+
+_FIXED_OFFSET_RE = re.compile(r"^([+-])(\d{1,2}):?(\d{2})$")
+
+
+def _resolve_tz(spec: str):
+    """Accept either an IANA zone name ('America/New_York') or a plain
+    fixed UTC offset ('+02:00', '-5', '+0300') -- the latter because MT5
+    broker-server time is conventionally reported to users as a fixed
+    'GMT+N' number, not an IANA zone, and forcing that into an IANA name
+    would require guessing which real zone the broker meant."""
+    m = _FIXED_OFFSET_RE.match(spec.strip())
+    if not m:
+        return spec  # IANA zone name; let tz_localize validate it
+    sign, hh, mm = m.groups()
+    minutes = int(hh) * 60 + int(mm)
+    if sign == "-":
+        minutes = -minutes
+    return dt_timezone(timedelta(minutes=minutes))
 
 
 @dataclasses.dataclass
@@ -74,10 +102,7 @@ def load_real_ohlcv(
     """Load a real historical OHLCV file (CSV or Parquet) into the same
     shape `research/data/synthetic.py` produces, so it can be handed
     straight to `research/core/feature_bar.py::build_symbol_engine_data`
-    with zero changes to any downstream module (Phase 8A Section 2/4).
-
-    NEVER CALLED WITH REAL DATA IN THIS SESSION -- see module docstring.
-    """
+    with zero changes to any downstream module (Phase 8A Section 2/4)."""
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"No such file: {path}")
@@ -85,13 +110,24 @@ def load_real_ohlcv(
     if p.suffix.lower() == ".parquet":
         df = pd.read_parquet(p)
     elif p.suffix.lower() in (".csv", ".txt"):
-        df = pd.read_csv(p)
+        # Auto-detect comma vs. tab: MT5's native "Export to CSV" from
+        # History Center is actually tab-delimited despite the extension.
+        # sep=None + engine="python" sniffs the real delimiter rather than
+        # assuming comma, which would otherwise silently parse the whole
+        # file into a single unsplit column.
+        df = pd.read_csv(p, sep=None, engine="python")
     else:
         raise RealDataSchemaError(f"Unsupported file extension: {p.suffix}")
 
     if column_map:
         df = df.rename(columns=column_map)
-    df.columns = [c.strip().lower() for c in df.columns]
+    # MT5 headers are literally "<DATE>", "<TICKVOL>", etc. -- stripping
+    # the angle brackets is lossless normalization, not a data change.
+    df.columns = [c.strip().strip("<>").lower() for c in df.columns]
+    if "tick_volume" in df.columns and "volume" not in df.columns:
+        df = df.rename(columns={"tick_volume": "volume"})
+    if "tickvol" in df.columns and "volume" not in df.columns:
+        df = df.rename(columns={"tickvol": "volume"})
 
     if "symbol" in df.columns and symbol is not None:
         df = df[df["symbol"] == symbol].drop(columns=["symbol"])
@@ -100,6 +136,14 @@ def load_real_ohlcv(
         raise RealDataSchemaError(
             f"File contains multiple symbols {symbols_present}; pass `symbol=` to select one."
         )
+
+    if "timestamp" not in df.columns and "date" in df.columns and "time" in df.columns:
+        # MT5's native export splits date ("2026.05.26") and time
+        # ("16:10:00") into separate columns. Concatenating them is a
+        # lossless, deterministic combination of the vendor's own two
+        # fields -- not an inferred or fabricated value.
+        df["timestamp"] = df["date"].astype(str) + " " + df["time"].astype(str)
+        df = df.drop(columns=["date", "time"])
 
     missing = REQUIRED_COLUMNS - set(df.columns)
     if missing:
@@ -110,7 +154,7 @@ def load_real_ohlcv(
 
     ts = pd.to_datetime(df["timestamp"], utc=False, errors="raise")
     if ts.dt.tz is None:
-        ts = ts.dt.tz_localize(assume_naive_tz)
+        ts = ts.dt.tz_localize(_resolve_tz(assume_naive_tz))
     df = df.set_index(ts.dt.tz_convert(UTC)).drop(columns=["timestamp"])
     df.index.name = "timestamp"
     df = df.sort_index()

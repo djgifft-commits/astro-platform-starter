@@ -408,15 +408,20 @@ def file_sha256(path: Path) -> str:
 
 def discover_data_files(search_dirs: List[Path]) -> List[Path]:
     """Every candidate data file under the given directories. Discovery
-    only -- identification happens separately and never guesses."""
-    found: List[Path] = []
+    only -- identification happens separately and never guesses.
+
+    Deduplicates by resolved path: the default search list includes both
+    a parent and a nested child directory (e.g. `data/` and
+    `data/historical/`), so a file under the nested one would otherwise be
+    discovered -- and ingested -- twice."""
+    seen: Dict[Path, Path] = {}
     for d in search_dirs:
         if not d.exists():
             continue
         for p in sorted(d.rglob("*")):
             if p.is_file() and p.suffix.lower() in DATA_EXTENSIONS:
-                found.append(p)
-    return found
+                seen.setdefault(p.resolve(), p)
+    return [seen[k] for k in sorted(seen)]
 
 
 def ingest_file(path: Path, assume_naive_tz: str = "UTC") -> Tuple[Optional[IngestedSymbol], List[str]]:
