@@ -24,5 +24,6 @@ pnpm-debug.log*
 .netlify
 research/.venv/
 research/results/
+research/results_8/
 __pycache__/
 *.pyc

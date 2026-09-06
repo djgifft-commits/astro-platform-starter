@@ -118,7 +118,7 @@ def build_hedge_correlation_report(
         "overall_mean_correlation": float(corr.dropna().mean()) if corr.notna().any() else None,
         "overall_mean_beta": float(beta.dropna().mean()) if beta.notna().any() else None,
         "regime_buckets": {k: dataclasses.asdict(v) for k, v in bucket_stats.items()},
-        "correlation_series_tail": corr.dropna().tail(10).to_dict(),
+        "correlation_series_tail": {str(ts): val for ts, val in corr.dropna().tail(10).items()},
     }
 
 
