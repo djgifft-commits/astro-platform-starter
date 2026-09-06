@@ -102,6 +102,7 @@ def main():
     matrix_rows = []
     trades_by_symbol_family = {sym: {} for sym in SYMBOLS}
     signals_rejected_by_symbol_family = {sym: {} for sym in SYMBOLS}
+    day_summaries_by_family = {}  # EURUSD only -- feeds the Decision Inspector tab
     all_pvalues = []
 
     for sym in SYMBOLS:
@@ -111,6 +112,8 @@ def main():
             run = run_backtest(ctx, strat, base_config)
             trades_by_symbol_family[sym][family] = run.trades
             signals_rejected_by_symbol_family[sym][family] = (run.signals, run.rejected)
+            if sym == "EURUSD":
+                day_summaries_by_family[family] = strat.day_summaries
             stats = trade_stats(run.trades)
             rs = np.array([t.r_multiple for t in run.trades])
             ci = bootstrap_mean_ci(rs, n_boot=500) if len(rs) >= 2 else {"excludes_zero": False}
@@ -138,6 +141,18 @@ def main():
             for f in purged_folds
         ]
     dump("or_v2_matrix", matrix_rows)
+
+    print("[3b/10] Decision Inspector sample (EURUSD, full per-day state history + entry decisions)...")
+    decision_inspector_sample = {}
+    for family, day_summaries in day_summaries_by_family.items():
+        # keep every day that reached at least ENTRY_CANDIDATE (has a
+        # recorded EntryDecision), capped so the JSON stays a reasonable
+        # size for the web terminal to load -- this is a *sample* for
+        # inspection, not a claim about aggregate performance (that's what
+        # or_v2_matrix.json is for).
+        interesting_days = [d for d in day_summaries if d.entry_decisions][:40]
+        decision_inspector_sample[family] = [dataclasses.asdict(d) for d in interesting_days]
+    dump("decision_inspector_sample", decision_inspector_sample)
 
     print("[4/10] Detailed 13-stage no-trade funnel (3 families x 8 symbols)...")
     funnel_rows = []

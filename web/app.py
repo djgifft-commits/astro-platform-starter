@@ -23,6 +23,7 @@ from dash import Input, Output, State, dash_table, dcc, html
 
 RESULTS_DIR = Path(__file__).parent.parent / "research" / "results"
 RESULTS_DIR_8 = Path(__file__).parent.parent / "research" / "results_8"
+RESULTS_DIR_9B = Path(__file__).parent.parent / "research" / "results_9b"
 
 
 def load(name: str, base: Path = RESULTS_DIR):
@@ -68,6 +69,22 @@ robustness_perturbation = load("robustness_perturbation", RESULTS_DIR_8) or {}
 out_of_sample_locked = load("out_of_sample_locked", RESULTS_DIR_8) or {}
 mutation_tests = load("mutation_tests", RESULTS_DIR_8) or []
 
+# Phase 9B artifacts (research/results_9b/) -- opening_range_v2 (1UP/2DOWN)
+# state machine, MARKET_CONTEXT/EntryDecision objects, and every genuinely
+# new Phase 9B experiment. Loaded alongside (never merged into) Phase 7/8.
+or_v2_matrix = load("or_v2_matrix", RESULTS_DIR_9B) or []
+decision_inspector_sample = load("decision_inspector_sample", RESULTS_DIR_9B) or {}
+no_trade_funnel_v2 = load("no_trade_funnel_v2", RESULTS_DIR_9B) or []
+regime_gating_9b = load("regime_gating", RESULTS_DIR_9B) or []
+fibonacci_depth_experiment = load("fibonacci_depth_experiment", RESULTS_DIR_9B) or []
+candle_pattern_ablation_9b = load("candle_pattern_ablation", RESULTS_DIR_9B) or []
+sl_tp_v2_comparison = load("sl_tp_v2_comparison", RESULTS_DIR_9B) or []
+cost_sensitivity_9b = load("cost_sensitivity", RESULTS_DIR_9B) or []
+portfolio_gating_9b = load("portfolio_gating", RESULTS_DIR_9B) or []
+robustness_perturbation_9b = load("robustness_perturbation", RESULTS_DIR_9B) or {}
+out_of_sample_locked_9b = load("out_of_sample_locked", RESULTS_DIR_9B) or {}
+mutation_tests_9b = load("mutation_tests", RESULTS_DIR_9B) or []
+
 candles_df = pd.DataFrame(candles)
 if not candles_df.empty:
     candles_df["ts"] = pd.to_datetime(candles_df["ts"])
@@ -86,7 +103,9 @@ def _round_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def make_table(df: pd.DataFrame, id_: str, page_size: int = 20):
+def make_table(df: pd.DataFrame, id_: str, page_size: int = 20, selectable: bool | None = None):
+    if selectable is None:
+        selectable = id_ == "trade-table"
     return dash_table.DataTable(
         id=id_,
         data=df.to_dict("records"),
@@ -97,7 +116,7 @@ def make_table(df: pd.DataFrame, id_: str, page_size: int = 20):
         style_table={"overflowX": "auto"},
         style_cell={"fontFamily": "monospace", "fontSize": "12px", "padding": "4px", "textAlign": "left"},
         style_header={"fontWeight": "bold", "backgroundColor": "#f0f0f0"},
-        row_selectable="single" if id_ == "trade-table" else None,
+        row_selectable="single" if selectable else None,
     )
 
 
@@ -610,6 +629,234 @@ def robustness_oos_mutation_tab():
     ])
 
 
+# =========================================================== Phase 9B tabs
+PHASE9B_BANNER = html.Div(
+    "PHASE 9B -- opening_range_v2 (1UP/2DOWN) state machine: explicit OR_CREATED->...->TRADE_EXECUTED states, "
+    "genuine M15 (OR) -> M5 (confirmation) -> M1 (entry) timeframe separation, and a directional bias-hierarchy "
+    "check that never assumes direction from a boundary break alone. Still 100% synthetic data.",
+    style={"background": "#eee7ff", "border": "1px solid #8a63d2", "padding": "6px 12px",
+           "marginBottom": "8px", "fontSize": "12px", "fontFamily": "sans-serif"},
+)
+
+
+def or_v2_matrix_tab():
+    if not or_v2_matrix:
+        return html.Div("No Phase 9B OR v2 matrix data -- run research/run_experiments_phase9b.py first.")
+    df = pd.DataFrame(or_v2_matrix)
+    keep = ["symbol", "entry_family", "n", "win_rate", "expectancy_r", "profit_factor", "sharpe",
+            "max_drawdown_r", "verdict", "bh_fdr_survives", "n_rejected_candidates"]
+    keep = [c for c in keep if c in df.columns]
+    agg_cols = [c for c in NUMERIC_COLS_TO_ROUND if c in df.columns]
+    agg = _round_df(df.groupby("entry_family")[agg_cols].mean(numeric_only=True).reset_index()) if agg_cols else pd.DataFrame()
+    return html.Div([
+        PHASE9B_BANNER,
+        html.H4("OR v2 matrix -- aggregated by entry family (breakout / retest / reversal)"),
+        make_table(agg, "or-v2-agg-table") if not agg.empty else html.Div("No data."),
+        html.H4("OR v2 matrix -- detail per symbol x family (walk-forward/purge summary in raw JSON)"),
+        make_table(_round_df(df[keep]), "or-v2-detail-table", page_size=30),
+    ])
+
+
+def no_trade_funnel_v2_tab():
+    if not no_trade_funnel_v2:
+        return html.Div("No Phase 9B no-trade funnel data.")
+    df = pd.DataFrame(no_trade_funnel_v2)
+    return html.Div([
+        PHASE9B_BANNER,
+        html.H4("13-stage no-trade funnel: session -> regime -> bias -> structure -> liquidity -> "
+                "breakout -> M5 confirm -> M1 trigger -> SL -> RR -> risk -> overlap -> EXECUTE"),
+        html.P("Ranging markets and every rejection stage are recorded, never silently discarded -- "
+               "rejections_by_stage/rejection_pct_by_stage in the raw JSON show exactly where each family's "
+               "candidates are lost."),
+        make_table(_round_df(pd.DataFrame([
+            {"symbol": r["symbol"], "entry_family": r["entry_family"], "n_candidates": r["n_candidates"],
+             "n_executed": r["n_executed"], "execution_rate": r["execution_rate"],
+             **{f"rej_{k}": v for k, v in r.get("rejections_by_stage", {}).items()}}
+            for r in no_trade_funnel_v2
+        ])), "funnel-v2-table", page_size=30),
+    ])
+
+
+def regime_gating_9b_tab():
+    if not regime_gating_9b:
+        return html.Div("No Phase 9B regime gating data.")
+    rows = []
+    for r in regime_gating_9b:
+        sym = r["symbol"]
+        for regime, stats in r.get("regime_breakdown_ungated", {}).items():
+            rows.append({"symbol": sym, "regime": regime, "n": stats.get("n"),
+                         "expectancy_r": stats.get("expectancy_r"), "win_rate": stats.get("win_rate")})
+    gate_rows = []
+    for r in regime_gating_9b:
+        sym = r["symbol"]
+        for config, stats in r.get("gate_configs", {}).items():
+            gate_rows.append({"symbol": sym, "gate_config": config, "n": stats.get("n"),
+                               "expectancy_r": stats.get("expectancy_r"), "gate_counts": stats.get("gate_counts")})
+    return html.Div([
+        PHASE9B_BANNER,
+        html.H4("Regime breakdown -- ungated (breakout family, nothing discarded)"),
+        make_table(_round_df(pd.DataFrame(rows)), "regime-breakdown-table", page_size=30) if rows else html.Div("No data."),
+        html.H4("Gate configuration comparison: UNGATED / DIRECTION_AGREEMENT_REQUIRED / STRONG_TREND_REQUIRED"),
+        make_table(_round_df(pd.DataFrame(gate_rows)), "regime-gate-config-table", page_size=30) if gate_rows else html.Div("No data."),
+    ])
+
+
+def fibonacci_candle_9b_tab():
+    fib_rows = []
+    for r in fibonacci_depth_experiment:
+        sym = r["symbol"]
+        fib_rows.append({"symbol": sym, "stage": "STRUCTURE_ONLY_BASELINE", "n": r["structure_only_baseline"].get("n"),
+                          "mean_displacement_after": r["structure_only_baseline"].get("mean_displacement_after")})
+        for bucket, stats in r.get("depth_buckets", {}).items():
+            fib_rows.append({"symbol": sym, "stage": bucket, "n": stats.get("n"),
+                              "mean_displacement_after": stats.get("mean_displacement_after"),
+                              "distinguishable_from_baseline": stats.get("distinguishable_from_structure_only_pool")})
+    candle_rows = []
+    for r in candle_pattern_ablation_9b:
+        sym = r["symbol"]
+        for pattern, stats in r.get("results", {}).items():
+            candle_rows.append({"symbol": sym, "pattern": pattern, "n": stats.get("n"),
+                                 "mean_signed_return_atr": stats.get("mean_signed_return_atr"),
+                                 "verdict": stats.get("verdict")})
+    return html.Div([
+        PHASE9B_BANNER,
+        html.H4("Fibonacci retracement depth: does exact depth add information beyond known structure preservation?"),
+        make_table(_round_df(pd.DataFrame(fib_rows)), "fib-depth-table", page_size=30) if fib_rows else html.Div("No data."),
+        html.H4("Named candlestick patterns vs. primitive anatomy (do named patterns add information?)"),
+        make_table(_round_df(pd.DataFrame(candle_rows)), "candle-ablation-table", page_size=30) if candle_rows else html.Div("No data."),
+    ])
+
+
+def sl_tp_cost_9b_tab():
+    return html.Div([
+        PHASE9B_BANNER,
+        html.H4("New SL/TP models (BREAKOUT_CANDLE, OR_OPPOSITE_BOUNDARY_TARGET, LIQUIDITY_TARGET) -- breakout family"),
+        make_table(_round_df(pd.DataFrame(sl_tp_v2_comparison)), "sl-tp-v2-table", page_size=30) if sl_tp_v2_comparison else html.Div("No data."),
+        html.H4("Cost sensitivity: COST_NEUTRAL / BASE_COST / ADVERSE_COST / STRESS_COST -- breakout family"),
+        make_table(_round_df(pd.DataFrame(cost_sensitivity_9b)), "cost-sensitivity-9b-table", page_size=30) if cost_sensitivity_9b else html.Div("No data."),
+    ])
+
+
+def portfolio_gating_9b_tab():
+    if not portfolio_gating_9b:
+        return html.Div("No Phase 9B portfolio gating data.")
+    return html.Div([
+        PHASE9B_BANNER,
+        html.H4("Position-overlap / correlation / risk portfolio gating (breakout family, correlated symbol pairs)"),
+        html.P("A candidate signal must NOT automatically become a trade -- outcome_counts breaks down "
+               "EXECUTED vs BLOCKED_POSITION_OVERLAP vs BLOCKED_RISK vs BLOCKED_CORRELATION."),
+        make_table(pd.DataFrame([
+            {"pair": r["pair"], "n_candidates": r["n_candidates"], "n_executed": r["n_executed"],
+             "execution_rate": round(r["execution_rate"], 3) if r.get("execution_rate") is not None else None,
+             "final_equity": round(r["final_equity"], 2) if r.get("final_equity") is not None else None,
+             **{f"outcome_{k}": v for k, v in r.get("outcome_counts", {}).items()}}
+            for r in portfolio_gating_9b
+        ]), "portfolio-gating-table"),
+    ])
+
+
+def robustness_oos_mutation_9b_tab():
+    plateau_summary = robustness_perturbation_9b.get("summary", {})
+    rows = robustness_perturbation_9b.get("rows", [])
+    return html.Div([
+        PHASE9B_BANNER,
+        html.H4("Parameter-perturbation robustness (opening_range_v2 breakout x EURUSD): "
+                "require_bias_agreement x sl_model x tp_model grid"),
+        html.P(f"Verdict: {plateau_summary.get('verdict', 'N/A')} -- "
+               f"{(plateau_summary.get('fraction_positive_expectancy') or 0):.0%} of "
+               f"{plateau_summary.get('n_configs_with_enough_trades', 0)} nearby configurations "
+               f"retained positive expectancy."),
+        make_table(_round_df(pd.DataFrame(rows)), "robustness-9b-table", page_size=30) if rows else html.Div("No data."),
+        html.H4("Locked out-of-sample test (frozen model, fresh never-reused seed, run once, reported as-is)"),
+        html.Pre(json.dumps(out_of_sample_locked_9b, indent=2, default=str), style={"fontSize": "12px"}),
+        html.H4("Mutation testing -- all 15 (7 Phase 8 + 8 new Phase 9B invariants)"),
+        make_table(pd.DataFrame(mutation_tests_9b), "mutation-9b-table") if mutation_tests_9b else html.Div("No data."),
+    ])
+
+
+# ------------------------------------------------------- Decision Inspector
+DECISION_INSPECTOR_FAMILIES = [f for f in ("breakout", "retest", "reversal") if decision_inspector_sample.get(f)]
+
+
+def _day_summary_row(family: str, idx: int, day: dict) -> dict:
+    decisions = day.get("entry_decisions", [])
+    final = decisions[-1] if decisions else None
+    return {
+        "family": family, "row_idx": idx, "date": day.get("date"),
+        "or_high": day.get("or_high"), "or_low": day.get("or_low"),
+        "n_states": len(day.get("state_history", [])), "n_decisions": len(decisions),
+        "final_decision": final.get("decision") if final else "NO_CANDIDATE",
+        "final_blocking_code": final.get("blocking_code") if final else "",
+    }
+
+
+def decision_inspector_tab():
+    if not DECISION_INSPECTOR_FAMILIES:
+        return html.Div("No Phase 9B decision inspector sample -- run research/run_experiments_phase9b.py first.")
+    return html.Div([
+        PHASE9B_BANNER,
+        html.H4("Decision Inspector -- WHY did the OR state machine enter, or not, on each NY session day?"),
+        html.P("Select an entry family, then a day, to see the full per-day state history (every OR state "
+               "transition with its timestamp) and every EntryDecision (what each timeframe knew via "
+               "MARKET_CONTEXT, which bias sources agreed/conflicted, and the exact blocking code if rejected)."),
+        dcc.Dropdown(
+            id="decision-inspector-family",
+            options=[{"label": f.upper(), "value": f} for f in DECISION_INSPECTOR_FAMILIES],
+            value=DECISION_INSPECTOR_FAMILIES[0], clearable=False, style={"width": "300px", "marginBottom": "10px"},
+        ),
+        html.Div(id="decision-inspector-day-table"),
+        html.Div(id="decision-inspector-detail", style={"marginTop": "10px", "padding": "10px", "background": "#f7f7f7",
+                                                          "fontFamily": "monospace", "whiteSpace": "pre-wrap"}),
+    ])
+
+
+@app.callback(Output("decision-inspector-day-table", "children"), Input("decision-inspector-family", "value"))
+def _render_decision_inspector_days(family):
+    days = decision_inspector_sample.get(family, [])
+    rows = [_day_summary_row(family, i, d) for i, d in enumerate(days)]
+    df = pd.DataFrame(rows)
+    return make_table(df, "decision-inspector-table", page_size=15, selectable=True)
+
+
+@app.callback(
+    Output("decision-inspector-detail", "children"),
+    Input("decision-inspector-table", "selected_rows"),
+    State("decision-inspector-family", "value"),
+)
+def _show_decision_detail(selected_rows, family):
+    if not selected_rows:
+        return "Select a day above to see its full OR state-machine history and every entry decision."
+    days = decision_inspector_sample.get(family, [])
+    day = days[selected_rows[0]]
+    lines = [f"OR DAY {day.get('date')}  (family={family})  or_high={day.get('or_high')} or_low={day.get('or_low')}",
+             "", "STATE HISTORY (every OR state transition, in order):"]
+    for ev in day.get("state_history", []):
+        lines.append(f"  {ev.get('timestamp')}  {ev.get('state')}  -- {ev.get('detail')}")
+
+    for i, dec in enumerate(day.get("entry_decisions", [])):
+        mc = dec.get("market_context", {}) or {}
+        lines += [
+            "", f"ENTRY DECISION #{i + 1}: {dec.get('decision')}  (entry_type={dec.get('entry_type')})",
+            f"  Direction: {dec.get('direction')} | Confidence: {dec.get('confidence')} | Score: {dec.get('score')}",
+            f"  Blocking code: {dec.get('blocking_code')}",
+            f"  WHY: reasons passed = {dec.get('reasons') or '(none)'}",
+            f"       failed conditions = {dec.get('failed_conditions') or '(none)'}",
+            "  WHAT EACH TIMEFRAME KNEW (MARKET_CONTEXT as-of this decision):",
+            f"    HTF bias={mc.get('htf_bias')} (confidence={mc.get('bias_confidence')}) | "
+            f"regime={mc.get('market_regime')} | trend={mc.get('trend_state')} | volatility={mc.get('volatility_state')}",
+            f"    External structure={mc.get('swing_structure')} | Internal structure={mc.get('internal_structure')} | "
+            f"last BOS/CHOCH={mc.get('last_bos_or_choch')}",
+            f"    Protected high={mc.get('protected_high')} | Protected low={mc.get('protected_low')} | "
+            f"Liquidity state={mc.get('liquidity_state')}",
+            f"    OR state={mc.get('or_state')} OR_high={mc.get('or_high')} OR_low={mc.get('or_low')} | "
+            f"price_location={mc.get('price_location_vs_or')}",
+            f"    ATR={mc.get('atr')} | Spread={mc.get('spread')} | Cost assumption: {mc.get('cost_assumption')}",
+            f"  Confirmation ts: {dec.get('confirmation_timestamp')} | Entry ts: {dec.get('entry_timestamp')} | "
+            f"Risk state: {dec.get('risk_state')}",
+        ]
+    return "\n".join(lines)
+
+
 app.layout = html.Div([
     DISCLAIMER,
     html.H2("Multi-Strategy Hedge Backtest Terminal (Research / Synthetic Data)"),
@@ -635,6 +882,14 @@ app.layout = html.Div([
         dcc.Tab(label="[P8] Strategy Selector", children=[strategy_selector_tab()]),
         dcc.Tab(label="[P8] No-Trade Funnel", children=[no_trade_funnel_tab()]),
         dcc.Tab(label="[P8] Robustness/OOS/Mutation", children=[robustness_oos_mutation_tab()]),
+        dcc.Tab(label="[P9B] OR v2 Matrix", children=[or_v2_matrix_tab()]),
+        dcc.Tab(label="[P9B] Decision Inspector", children=[decision_inspector_tab()]),
+        dcc.Tab(label="[P9B] No-Trade Funnel (13-stage)", children=[no_trade_funnel_v2_tab()]),
+        dcc.Tab(label="[P9B] Regime Gating", children=[regime_gating_9b_tab()]),
+        dcc.Tab(label="[P9B] Fibonacci Depth / Candle Ablation", children=[fibonacci_candle_9b_tab()]),
+        dcc.Tab(label="[P9B] SL/TP v2 / Cost Sensitivity", children=[sl_tp_cost_9b_tab()]),
+        dcc.Tab(label="[P9B] Portfolio Gating", children=[portfolio_gating_9b_tab()]),
+        dcc.Tab(label="[P9B] Robustness/OOS/Mutation", children=[robustness_oos_mutation_9b_tab()]),
     ]),
 ])
 
