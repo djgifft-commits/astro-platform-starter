@@ -7,14 +7,15 @@ is assumed superior; research/backtest/validation.py is where that
 question gets an answer, per-strategy, per-regime.
 
 Implemented: FIXED_ATR, STRUCTURE_INVALIDATION, SWING_EXTREME,
-OR_OPPOSITE_BOUNDARY, VOLATILITY_ADAPTIVE (Phase 7), plus two added in
-Phase 8O: FIBONACCI_INVALIDATION (stop beyond the impulse's own origin —
-the classic "0%/100% Fibonacci invalidation" anchor) and LIQUIDITY_BASED
-(stop beyond the nearest ESTIMATED_STOP_LIQUIDITY pool on the invalidating
-side). OB_INVALIDATION remains deferred: this project has no order-block
-detector (scope narrowing, see audit report); implementing one solely to
-produce an eighth near-duplicate of STRUCTURE_INVALIDATION would not test
-a distinct hypothesis.
+OR_OPPOSITE_BOUNDARY, VOLATILITY_ADAPTIVE (Phase 7), FIBONACCI_INVALIDATION
+and LIQUIDITY_BASED (Phase 8O), plus BREAKOUT_CANDLE (Phase 9N: stop
+beyond the M5 breakout candle's own opposite extreme — only usable for
+signals whose strategy attaches `breakout_candle_low`/
+`breakout_candle_high` to `signal.meta`, e.g.
+research/strategies/opening_range_v2.py). OB_INVALIDATION remains
+deferred: this project has no order-block detector (scope narrowing, see
+audit report); implementing one solely to produce a near-duplicate of
+STRUCTURE_INVALIDATION would not test a distinct hypothesis.
 """
 from __future__ import annotations
 
@@ -131,7 +132,23 @@ def liquidity_based(signal: Signal, liquidity_pools: list, buffer_atr: float = 0
     return StopLoss("LIQUIDITY_BASED", price, dist)
 
 
+def breakout_candle(signal: Signal, buffer_atr: float = 0.05, atr_at_entry: float = 0.0) -> Optional[StopLoss]:
+    """Stop just beyond the M5 breakout candle's own opposite extreme
+    (Phase 9N). Requires `breakout_candle_low`/`breakout_candle_high` in
+    signal.meta -- only opening_range_v2.py's signals carry these."""
+    key = "breakout_candle_low" if signal.direction == "LONG" else "breakout_candle_high"
+    level = signal.meta.get(key)
+    if level is None:
+        return None
+    buffer = buffer_atr * atr_at_entry
+    price = level - buffer if signal.direction == "LONG" else level + buffer
+    dist = abs(signal.entry_price - price)
+    if dist <= 0:
+        return None
+    return StopLoss("BREAKOUT_CANDLE", price, dist)
+
+
 SL_MODELS = [
     "FIXED_ATR", "STRUCTURE_INVALIDATION", "SWING_EXTREME", "OR_OPPOSITE_BOUNDARY",
-    "VOLATILITY_ADAPTIVE", "FIBONACCI_INVALIDATION", "LIQUIDITY_BASED",
+    "VOLATILITY_ADAPTIVE", "FIBONACCI_INVALIDATION", "LIQUIDITY_BASED", "BREAKOUT_CANDLE",
 ]

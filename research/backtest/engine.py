@@ -71,6 +71,8 @@ def apply_sl_model(model: str, signal: Signal, ctx: SymbolEngineData, atr_at_ent
         return sl_models.fibonacci_invalidation(signal, atr_at_entry=atr_at_entry)
     if model == "LIQUIDITY_BASED":
         return sl_models.liquidity_based(signal, ctx.liquidity_pools, atr_at_entry=atr_at_entry)
+    if model == "BREAKOUT_CANDLE":
+        return sl_models.breakout_candle(signal, atr_at_entry=atr_at_entry)
     raise ValueError(f"unknown SL model {model}")
 
 
@@ -88,6 +90,10 @@ def apply_tp_model(model: Optional[str], signal: Signal, sl: sl_models.StopLoss,
     if model.startswith("OR_EXTENSION_"):
         mult = float(model[len("OR_EXTENSION_"):-1])
         return tp_models.or_extension(signal, extension_mult=mult)
+    if model == "OR_OPPOSITE_BOUNDARY_TARGET":
+        return tp_models.or_opposite_boundary_target(signal)
+    if model == "LIQUIDITY_TARGET":
+        return tp_models.liquidity_target(signal, ctx.liquidity_pools)
     raise ValueError(f"unknown TP model {model}")
 
 

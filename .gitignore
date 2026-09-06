@@ -25,5 +25,6 @@ pnpm-debug.log*
 research/.venv/
 research/results/
 research/results_8/
+research/results_9b/
 __pycache__/
 *.pyc

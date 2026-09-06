@@ -25,6 +25,8 @@ from typing import Callable, List, Tuple
 import numpy as np
 import pandas as pd
 
+from research.core.market_context import MarketContext
+
 MutationResult = Tuple[str, bool, str]  # (mutation_name, detected, detail)
 
 
@@ -196,6 +198,227 @@ def test_disabled_cost() -> MutationResult:
                       "disabling spread cost made results WORSE -- cost is being applied backwards")
 
 
+def test_wrong_or_boundary() -> MutationResult:
+    from research.core.sessions import NY_SESSION_OPEN, NY_TZ, compute_ny_opening_ranges, session_open_utc
+
+    def check():
+        open_utc = session_open_utc(pd.Timestamp("2024-06-03", tz="UTC"), NY_SESSION_OPEN, NY_TZ)
+        or_minutes = 15
+        idx = pd.date_range(open_utc, periods=or_minutes + 1, freq="1min", tz="UTC")
+        # the (or_minutes)-th bar sits AT the close boundary (open + 15min)
+        # and must be EXCLUDED -- give it an extreme high/low that would
+        # corrupt or_high/or_low if a mutated "<=" boundary let it in.
+        rows = []
+        for i, ts in enumerate(idx):
+            if i < or_minutes:
+                rows.append({"open": 1.1000, "high": 1.1005, "low": 1.0995, "close": 1.1000})
+            else:
+                rows.append({"open": 1.1000, "high": 9.9999, "low": 0.0001, "close": 1.1000})
+        m1 = pd.DataFrame(rows, index=idx)
+        ors = compute_ny_opening_ranges(m1, or_minutes=or_minutes)
+        assert len(ors) == 1
+        orr = ors[0]
+        return orr.or_high < 9.0 and orr.or_low > 0.001
+
+    return _run_case("wrong_or_boundary", check,
+                      "compute_ny_opening_ranges correctly excluded the bar exactly at the OR close boundary",
+                      "compute_ny_opening_ranges let a bar at/after the OR close boundary corrupt or_high/or_low")
+
+
+def test_wrong_session_dst_boundary() -> MutationResult:
+    from research.core.sessions import NY_SESSION_OPEN, NY_TZ, session_open_utc
+
+    def check():
+        # 2024-03-10 is the US spring-forward transition (EST -> EDT).
+        before = session_open_utc(pd.Timestamp("2024-03-08", tz="UTC"), NY_SESSION_OPEN, NY_TZ)  # EST, UTC-5
+        after = session_open_utc(pd.Timestamp("2024-03-11", tz="UTC"), NY_SESSION_OPEN, NY_TZ)  # EDT, UTC-4
+        # a correct DST-aware conversion must shift the UTC opening time by
+        # exactly 1 hour earlier once EDT begins; a mutation that hardcodes
+        # one fixed UTC offset year-round would show a 0-hour shift here.
+        before_utc_hour = before.tz_convert("UTC").hour
+        after_utc_hour = after.tz_convert("UTC").hour
+        return (before_utc_hour - after_utc_hour) == 1
+
+    return _run_case("wrong_session_dst_boundary", check,
+                      "NY opening range UTC anchor correctly shifted by 1 hour across the spring-forward DST transition",
+                      "NY opening range UTC anchor did NOT shift across the DST transition -- looks like a hardcoded fixed-offset bug")
+
+
+def test_wrong_m5_confirmation_direction() -> MutationResult:
+    from research.core.feature_bar import build_symbol_engine_data
+    from research.data.synthetic import generate_multi_symbol_dataset
+    from research.strategies.opening_range_v2 import ORState, OpeningRangeStateMachine
+
+    def check():
+        ds = generate_multi_symbol_dataset(["EURUSD"], n_days=180, seed=7)
+        ctx = build_symbol_engine_data("EURUSD", ds["EURUSD"].bars)
+        strat = OpeningRangeStateMachine(entry_family="breakout")
+        strat.scan(ctx)
+        # OR_BROKEN_UP/OR_BROKEN_DOWN are recorded independently of the
+        # direction later attached to any resulting signal -- if a
+        # mutation swapped the LONG/SHORT literal passed to the entry
+        # handler without touching the state label (or vice versa), a
+        # produced signal's direction would disagree with its own day's
+        # recorded breakout state.
+        checked = 0
+        for day in strat.day_summaries:
+            states = {ev.state for ev in day.state_history}
+            confirmed = [d for d in day.entry_decisions if d.decision == "ENTRY_CONFIRMED"]
+            if not confirmed:
+                continue
+            checked += 1
+            if ORState.OR_BROKEN_UP in states and confirmed[0].direction != "LONG":
+                return False
+            if ORState.OR_BROKEN_DOWN in states and confirmed[0].direction != "SHORT":
+                return False
+        return checked > 0
+
+    return _run_case("wrong_m5_confirmation_direction", check,
+                      "every confirmed OR breakout signal's direction agreed with its own day's OR_BROKEN_UP/DOWN state",
+                      "found a confirmed breakout signal whose direction disagreed with its own recorded OR_BROKEN_UP/DOWN state")
+
+
+def test_wrong_m1_entry_timing() -> MutationResult:
+    from research.strategies.base import window_after
+
+    def check():
+        idx = pd.date_range("2024-01-01 09:45", periods=10, freq="1min", tz="UTC")
+        df = pd.DataFrame({"close": range(10)}, index=idx)
+        confirm_ts = idx[3]
+        correct = window_after(df, confirm_ts, 5)
+        # MUTATION: an off-by-one that includes the confirmation bar itself
+        # (side="left" instead of "right") would leak a bar that was known
+        # AT confirmation time into the "after confirmation" entry search --
+        # a real look-ahead-adjacent timing bug.
+        pos_mutated = df.index.searchsorted(confirm_ts, side="left")
+        mutated = df.iloc[pos_mutated: pos_mutated + 5]
+        correct_excludes_confirm_bar = confirm_ts not in correct.index
+        mutation_would_include_confirm_bar = confirm_ts in mutated.index
+        return correct_excludes_confirm_bar and mutation_would_include_confirm_bar
+
+    return _run_case("wrong_m1_entry_timing", check,
+                      "window_after correctly excludes the M5 confirmation bar itself from the M1 entry search window",
+                      "window_after failed to exclude the confirmation bar -- M1 entry search would not be strictly after confirmation")
+
+
+def test_wrong_sl_model_side() -> MutationResult:
+    from research.risk import sl_models
+    from research.strategies.base import Signal
+
+    def make_signal(direction):
+        return Signal(strategy="t", variant="v", symbol="EURUSD", direction=direction,
+                      entry_ts=pd.Timestamp.now(tz="UTC"), entry_price=1.1010,
+                      setup_reason="", rules_passed=[], rules_failed=[], market_condition="",
+                      directional_bias="", candle_pattern=None, fib_state=None, liquidity_state=None,
+                      displacement_state=None,
+                      meta={"breakout_candle_low": 1.0990, "breakout_candle_high": 1.1030})
+
+    def check():
+        long_sl = sl_models.breakout_candle(make_signal("LONG"), buffer_atr=0.0, atr_at_entry=0.0)
+        short_sl = sl_models.breakout_candle(make_signal("SHORT"), buffer_atr=0.0, atr_at_entry=0.0)
+        # a LONG stop must sit BELOW entry (protective), a SHORT stop ABOVE
+        # entry -- a mutation that read the wrong key (high instead of low,
+        # or vice versa) would put the stop on the wrong, unprotective side.
+        return long_sl is not None and short_sl is not None and long_sl.price < 1.1010 < short_sl.price
+
+    return _run_case("wrong_sl_model_side", check,
+                      "BREAKOUT_CANDLE stop correctly placed below entry for LONG and above entry for SHORT",
+                      "BREAKOUT_CANDLE stop was placed on the wrong (unprotective) side of entry for at least one direction")
+
+
+def test_wrong_tp_model_direction() -> MutationResult:
+    from research.core.liquidity import LiquidityPool
+    from research.risk import tp_models
+    from research.strategies.base import Signal
+
+    def make_signal(direction, entry_price=1.1000):
+        return Signal(strategy="t", variant="v", symbol="EURUSD", direction=direction,
+                      entry_ts=pd.Timestamp.now(tz="UTC"), entry_price=entry_price,
+                      setup_reason="", rules_passed=[], rules_failed=[], market_condition="",
+                      directional_bias="", candle_pattern=None, fib_state=None, liquidity_state=None,
+                      displacement_state=None, meta={})
+
+    def check():
+        pools = [
+            LiquidityPool(price=1.1050, kind="BSL", source_swing_pos=0),
+            LiquidityPool(price=1.0950, kind="SSL", source_swing_pos=0),
+        ]
+        long_tp = tp_models.liquidity_target(make_signal("LONG"), pools)
+        short_tp = tp_models.liquidity_target(make_signal("SHORT"), pools)
+        # a LONG target must sit ABOVE entry (a favorable-direction target),
+        # a SHORT target BELOW entry -- a mutation that picked the wrong
+        # liquidity kind for a direction would put the "profit" target on
+        # the adverse side instead.
+        return long_tp is not None and short_tp is not None and long_tp.price > 1.1000 > short_tp.price
+
+    return _run_case("wrong_tp_model_direction", check,
+                      "LIQUIDITY_TARGET correctly placed above entry for LONG and below entry for SHORT",
+                      "LIQUIDITY_TARGET was placed on the adverse (non-favorable) side of entry for at least one direction")
+
+
+def test_wrong_position_overlap_logic() -> MutationResult:
+    from research.backtest.portfolio_gating import simulate_portfolio_gating
+    from research.risk.exit_models import TradeResult
+    from research.risk.position_sizing import RiskLimits
+    from research.strategies.base import Signal
+
+    def make_trade(symbol, entry_ts, exit_ts, r=0.5):
+        sig = Signal(strategy="t", variant="v", symbol=symbol, direction="LONG", entry_ts=entry_ts,
+                     entry_price=1.0, setup_reason="", rules_passed=[], rules_failed=[], market_condition="",
+                     directional_bias="", candle_pattern=None, fib_state=None, liquidity_state=None,
+                     displacement_state=None)
+        return TradeResult(signal=sig, sl_model="x", tp_model="x", exit_model="x", entry_ts=entry_ts,
+                            entry_price=1.0, initial_sl=0.99, initial_risk=0.01, exit_ts=exit_ts,
+                            exit_price=1.01, exit_reason="TP_HIT", r_multiple=r, mfe_r=r, mae_r=0.0, duration_bars=1)
+
+    def check():
+        base = pd.Timestamp("2024-01-01 00:00", tz="UTC")
+        # 3 trades, all held open simultaneously (entries a minute apart,
+        # exits a day later) -- with max_open_positions=2, the 3rd
+        # concurrent entry must be blocked, not silently executed.
+        trades = [
+            make_trade("EURUSD", base, base + pd.Timedelta(days=1)),
+            make_trade("GBPUSD", base + pd.Timedelta(minutes=1), base + pd.Timedelta(days=1)),
+            make_trade("USDJPY", base + pd.Timedelta(minutes=2), base + pd.Timedelta(days=1)),
+        ]
+        limits = RiskLimits(max_open_positions=2, max_daily_loss_pct=1.0, max_consecutive_losses=100)
+        outcomes = simulate_portfolio_gating(
+            {"EURUSD": [trades[0]], "GBPUSD": [trades[1]], "USDJPY": [trades[2]]}, limits=limits,
+        )
+        by_symbol = {o.trade.signal.symbol: o.outcome for o in outcomes}
+        return (by_symbol["EURUSD"] == "EXECUTED" and by_symbol["GBPUSD"] == "EXECUTED"
+                and by_symbol["USDJPY"] == "BLOCKED_POSITION_OVERLAP")
+
+    return _run_case("wrong_position_overlap_logic", check,
+                      "simulate_portfolio_gating correctly blocked the 3rd concurrently-open position under max_open_positions=2",
+                      "simulate_portfolio_gating failed to block a position beyond max_open_positions -- overlap limit is not enforced")
+
+
+def test_wrong_strategy_selection_bias_hierarchy() -> MutationResult:
+    from research.strategies.opening_range_v2 import classify_bias_hierarchy
+
+    def check():
+        mc = MarketContext(
+            symbol="EURUSD", session="NEW_YORK", timestamp=pd.Timestamp.now(tz="UTC"), timeframe="M5",
+            htf_bias="LONG", bias_confidence=0.6, market_regime="STRONG_DOWNTREND", trend_state="SHORT",
+            volatility_state="NORMAL", swing_structure="SHORT", internal_structure="SHORT",
+            protected_high=None, protected_low=None, last_bos_or_choch=None, liquidity_state="NONE",
+            or_state="OR_ACTIVE", or_high=1.11, or_low=1.10, or_width=0.01, price_location_vs_or="ABOVE_OR",
+            atr=0.001, spread=0.0001, cost_assumption="test",
+        )
+        # htf_bias agrees with a LONG candidate, but external structure,
+        # internal structure, AND regime trend all disagree -- 3 conflicts
+        # vs 1 agreement must classify as CONFLICTED, never a naive
+        # "just trust htf_bias" BULLISH. A mutation that only looked at
+        # htf_bias (ignoring the other votes) would wrongly return BULLISH.
+        label, agreeing, conflicting = classify_bias_hierarchy(mc, "LONG")
+        return label == "CONFLICTED" and len(conflicting) >= 2
+
+    return _run_case("wrong_strategy_selection_bias_hierarchy", check,
+                      "classify_bias_hierarchy correctly returned CONFLICTED when structure/regime disagreed with htf_bias despite htf_bias agreeing",
+                      "classify_bias_hierarchy returned a directional label from htf_bias alone, ignoring conflicting structure/regime votes")
+
+
 ALL_MUTATION_TESTS = [
     test_future_bar_access,
     test_forming_bar_inclusion,
@@ -204,6 +427,14 @@ ALL_MUTATION_TESTS = [
     test_wrong_spread_direction,
     test_train_test_contamination,
     test_disabled_cost,
+    test_wrong_or_boundary,
+    test_wrong_session_dst_boundary,
+    test_wrong_m5_confirmation_direction,
+    test_wrong_m1_entry_timing,
+    test_wrong_sl_model_side,
+    test_wrong_tp_model_direction,
+    test_wrong_position_overlap_logic,
+    test_wrong_strategy_selection_bias_hierarchy,
 ]
 
 

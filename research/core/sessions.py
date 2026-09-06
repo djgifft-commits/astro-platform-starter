@@ -17,6 +17,7 @@ import pandas as pd
 from research.config import LONDON_TZ, NY_SESSION_OPEN, NY_TZ, NY_OPENING_RANGE_MINUTES, UTC
 
 ASIA_TZ = "Asia/Tokyo"
+SYDNEY_TZ = "Australia/Sydney"
 
 
 def session_open_utc(date: pd.Timestamp, local_time: str = NY_SESSION_OPEN, tz=NY_TZ) -> pd.Timestamp:
@@ -51,21 +52,27 @@ def _local_hour(ts_utc: pd.DatetimeIndex, tz) -> pd.Index:
 
 
 def classify_session(index_utc: pd.DatetimeIndex) -> pd.Series:
-    """Classify each UTC timestamp into ASIA / LONDON / NEW_YORK /
+    """Classify each UTC timestamp into SYDNEY / ASIA / LONDON / NEW_YORK /
     LONDON_NY_OVERLAP / OFF_HOURS using real local-time windows per venue.
     A timestamp can fall in more than one venue window; overlap is called
     out explicitly, otherwise venue precedence is LONDON_NY_OVERLAP >
-    NEW_YORK > LONDON > ASIA > OFF_HOURS."""
+    NEW_YORK > LONDON > ASIA > SYDNEY > OFF_HOURS (Sydney is listed last
+    because its trading hours are almost entirely subsumed by the Asia
+    window; it is only distinguishable in the early Asia pre-Tokyo-open
+    hours)."""
+    sydney_h = _local_hour(index_utc, SYDNEY_TZ)
     asia_h = _local_hour(index_utc, ASIA_TZ)
     london_h = _local_hour(index_utc, LONDON_TZ)
     ny_h = _local_hour(index_utc, NY_TZ)
 
+    in_sydney = (sydney_h >= 8) & (sydney_h < 17)
     in_asia = (asia_h >= 9) & (asia_h < 18)
     in_london = (london_h >= 8) & (london_h < 17)
     in_ny = (ny_h >= 8) & (ny_h < 17)
     overlap = in_london & in_ny
 
     out = pd.Series("OFF_HOURS", index=index_utc)
+    out[in_sydney] = "SYDNEY"
     out[in_asia] = "ASIA"
     out[in_london] = "LONDON"
     out[in_ny] = "NEW_YORK"

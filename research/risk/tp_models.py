@@ -14,9 +14,10 @@ entry, and are covered there instead of being duplicated as a TP model.
 from __future__ import annotations
 
 import dataclasses
-from typing import Optional
+from typing import List, Optional
 
 from research.strategies.base import Signal
+from research.core.liquidity import LiquidityPool
 
 
 @dataclasses.dataclass
@@ -69,7 +70,40 @@ def or_extension(signal: Signal, extension_mult: float = 1.0) -> Optional[TakePr
     return TakeProfit(f"OR_EXTENSION_{extension_mult}x", price, dist)
 
 
+def or_opposite_boundary_target(signal: Signal) -> Optional[TakeProfit]:
+    """Phase 9O: target the OPPOSITE OR boundary from the one the trade
+    broke through (e.g. a LONG breakout above OR_high targets OR_low --
+    a "give back the whole range" target, used here purely as a TP
+    candidate to test, not a claim it is a good one)."""
+    if "or_high" not in signal.meta or "or_low" not in signal.meta:
+        return None
+    target = signal.meta["or_low"] if signal.direction == "LONG" else signal.meta["or_high"]
+    dist = abs(target - signal.entry_price)
+    if dist <= 0:
+        return None
+    return TakeProfit("OR_OPPOSITE_BOUNDARY_TARGET", target, dist)
+
+
+def liquidity_target(signal: Signal, liquidity_pools: List[LiquidityPool]) -> Optional[TakeProfit]:
+    """Nearest ESTIMATED_STOP_LIQUIDITY pool ahead of entry in the
+    favorable direction (Phase 9O liquidity target)."""
+    kind_needed = "BSL" if signal.direction == "LONG" else "SSL"
+    candidates = [p for p in liquidity_pools if p.kind == kind_needed]
+    if signal.direction == "LONG":
+        candidates = [p for p in candidates if p.price > signal.entry_price]
+    else:
+        candidates = [p for p in candidates if p.price < signal.entry_price]
+    if not candidates:
+        return None
+    nearest = min(candidates, key=lambda p: abs(p.price - signal.entry_price))
+    dist = abs(nearest.price - signal.entry_price)
+    if dist <= 0:
+        return None
+    return TakeProfit("LIQUIDITY_TARGET", nearest.price, dist)
+
+
 TP_MODELS = [
-    "FIXED_1R", "FIXED_1.5R", "FIXED_2R", "FIXED_3R", "ATR_TARGET", "STRUCTURE_TARGET",
-    "OR_EXTENSION_1.0x",
+    "FIXED_0.5R", "FIXED_1R", "FIXED_1.5R", "FIXED_2R", "FIXED_3R", "FIXED_4R",
+    "ATR_TARGET", "STRUCTURE_TARGET", "OR_EXTENSION_1.0x",
+    "OR_OPPOSITE_BOUNDARY_TARGET", "LIQUIDITY_TARGET",
 ]
