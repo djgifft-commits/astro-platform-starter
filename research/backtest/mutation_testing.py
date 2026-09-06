@@ -419,6 +419,128 @@ def test_wrong_strategy_selection_bias_hierarchy() -> MutationResult:
                       "classify_bias_hierarchy returned a directional label from htf_bias alone, ignoring conflicting structure/regime votes")
 
 
+def test_bos_choch_direction() -> MutationResult:
+    from research.core.structure import find_structure_events
+    from research.data.synthetic import generate_multi_symbol_dataset
+
+    def check():
+        ds = generate_multi_symbol_dataset(["EURUSD"], n_days=60)
+        m15 = ds["EURUSD"].bars.resample("15min").agg(
+            {"open": "first", "high": "max", "low": "min", "close": "last"}
+        ).dropna()
+        events = find_structure_events(m15, confirm_bars=3)
+        if len(events) < 3:
+            return False
+        # bias starts undefined, so the very first structure event can
+        # never be a continuation -- it must be CHOCH.
+        if events[0].kind != "CHOCH":
+            return False
+        # a mutation that always labeled events "BOS" (or always "CHOCH")
+        # regardless of the prevailing bias would violate this: consecutive
+        # SAME-direction breaks must be BOS, a direction CHANGE must be CHOCH.
+        for prev, curr in zip(events, events[1:]):
+            expected = "BOS" if curr.direction == prev.direction else "CHOCH"
+            if curr.kind != expected:
+                return False
+        return True
+
+    return _run_case("bos_choch_direction", check,
+                      "every structure event's BOS/CHOCH label correctly reflected whether it continued or reversed the prevailing bias",
+                      "found a structure event whose BOS/CHOCH label disagreed with the prevailing-bias continuation/reversal rule")
+
+
+def test_fibonacci_anchor_causality() -> MutationResult:
+    from research.core.atr import atr as compute_atr
+    from research.core.fibonacci import evaluate_retracements, find_impulses
+    from research.data.synthetic import generate_multi_symbol_dataset
+
+    def check():
+        ds = generate_multi_symbol_dataset(["EURUSD"], n_days=60)
+        m5 = ds["EURUSD"].bars.resample("5min").agg(
+            {"open": "first", "high": "max", "low": "min", "close": "last"}
+        ).dropna()
+        atr_series = compute_atr(m5)
+        impulses = find_impulses(m5, atr_series)
+        outcomes = evaluate_retracements(m5, impulses, atr_series)
+        touched = [o for o in outcomes if o.touched and o.touch_pos is not None]
+        if not touched:
+            return False
+        # a retracement touch must be found strictly AFTER the impulse's
+        # own defining end bar -- a mutation that let the scan window
+        # include end_pos itself would let the impulse's own anchor bar
+        # "confirm" its own retracement, a subtle look-ahead-adjacent bug.
+        violations = [o for o in touched if o.touch_pos <= o.impulse.end_pos]
+        return len(violations) == 0
+
+    return _run_case("fibonacci_anchor_causality", check,
+                      "every retracement touch was found strictly after its impulse's own end bar, never at or before it",
+                      "found a retracement touch at or before its own impulse's end bar -- the anchor is not causal")
+
+
+def test_fib_236_classification() -> MutationResult:
+    from research.strategies.opening_range_v2 import _fib_depth_bin
+
+    def check():
+        # exact boundary values Phase 9C names: 23.6/38.2/61.8/78.6%.
+        # MUTATION BAIT: an off-by-direction "<" vs "<=" at any boundary
+        # would misclassify the value exactly AT that boundary.
+        return (
+            _fib_depth_bin(0.235) == "NO_RETRACEMENT"
+            and _fib_depth_bin(0.236) == "SHALLOW_RETRACEMENT"
+            and _fib_depth_bin(0.382) == "SHALLOW_RETRACEMENT"
+            and _fib_depth_bin(0.3821) == "NORMAL_RETRACEMENT"
+            and _fib_depth_bin(0.618) == "NORMAL_RETRACEMENT"
+            and _fib_depth_bin(0.6181) == "DEEP_RETRACEMENT"
+            and _fib_depth_bin(0.786) == "DEEP_RETRACEMENT"
+            and _fib_depth_bin(0.7861) == "NO_RETRACEMENT"
+        )
+
+    return _run_case("fib_236_classification", check,
+                      "_fib_depth_bin classified every named boundary (23.6/38.2/61.8/78.6%) on the correct side",
+                      "_fib_depth_bin misclassified at least one exact Fibonacci boundary value")
+
+
+def test_portfolio_gross_exposure() -> MutationResult:
+    from research.backtest.portfolio_gating import simulate_portfolio_gating
+    from research.risk.exit_models import TradeResult
+    from research.risk.position_sizing import RiskLimits
+    from research.strategies.base import Signal
+
+    def make_trade(symbol, entry_ts, exit_ts, r=0.5):
+        sig = Signal(strategy="t", variant="v", symbol=symbol, direction="LONG", entry_ts=entry_ts,
+                     entry_price=1.0, setup_reason="", rules_passed=[], rules_failed=[], market_condition="",
+                     directional_bias="", candle_pattern=None, fib_state=None, liquidity_state=None,
+                     displacement_state=None)
+        return TradeResult(signal=sig, sl_model="x", tp_model="x", exit_model="x", entry_ts=entry_ts,
+                            entry_price=1.0, initial_sl=0.99, initial_risk=0.01, exit_ts=exit_ts,
+                            exit_price=1.01, exit_reason="TP_HIT", r_multiple=r, mfe_r=r, mae_r=0.0, duration_bars=1)
+
+    def check():
+        base = pd.Timestamp("2024-01-01", tz="UTC")
+        trades = [
+            make_trade("EURUSD", base, base + pd.Timedelta(days=1)),
+            make_trade("GBPUSD", base + pd.Timedelta(minutes=1), base + pd.Timedelta(days=1)),
+            make_trade("USDJPY", base + pd.Timedelta(minutes=2), base + pd.Timedelta(days=1)),
+        ]
+        # max_open_positions deliberately loose (10) so ONLY the gross
+        # exposure limit can possibly block the 3rd concurrent position --
+        # isolates the MAX_GROSS_EXPOSURE -> BLOCKED_POSITION_OVERLAP
+        # mapping from the open-position-count path already covered by
+        # test_wrong_position_overlap_logic.
+        limits = RiskLimits(max_open_positions=10, max_gross_exposure_lots=2.0,
+                             max_daily_loss_pct=1.0, max_consecutive_losses=100)
+        outcomes = simulate_portfolio_gating(
+            {"EURUSD": [trades[0]], "GBPUSD": [trades[1]], "USDJPY": [trades[2]]}, limits=limits,
+        )
+        by_symbol = {o.trade.signal.symbol: o.outcome for o in outcomes}
+        return (by_symbol["EURUSD"] == "EXECUTED" and by_symbol["GBPUSD"] == "EXECUTED"
+                and by_symbol["USDJPY"] == "BLOCKED_POSITION_OVERLAP")
+
+    return _run_case("portfolio_gross_exposure", check,
+                      "simulate_portfolio_gating correctly blocked the 3rd position on MAX_GROSS_EXPOSURE alone (open-position count was not the binding limit)",
+                      "simulate_portfolio_gating failed to enforce MAX_GROSS_EXPOSURE independently of open-position count")
+
+
 ALL_MUTATION_TESTS = [
     test_future_bar_access,
     test_forming_bar_inclusion,
@@ -435,6 +557,10 @@ ALL_MUTATION_TESTS = [
     test_wrong_tp_model_direction,
     test_wrong_position_overlap_logic,
     test_wrong_strategy_selection_bias_hierarchy,
+    test_bos_choch_direction,
+    test_fibonacci_anchor_causality,
+    test_fib_236_classification,
+    test_portfolio_gross_exposure,
 ]
 
 

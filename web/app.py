@@ -24,6 +24,7 @@ from dash import Input, Output, State, dash_table, dcc, html
 RESULTS_DIR = Path(__file__).parent.parent / "research" / "results"
 RESULTS_DIR_8 = Path(__file__).parent.parent / "research" / "results_8"
 RESULTS_DIR_9B = Path(__file__).parent.parent / "research" / "results_9b"
+RESULTS_DIR_9C_REAL = Path(__file__).parent.parent / "research" / "results_9c_real"
 
 
 def load(name: str, base: Path = RESULTS_DIR):
@@ -84,6 +85,26 @@ portfolio_gating_9b = load("portfolio_gating", RESULTS_DIR_9B) or []
 robustness_perturbation_9b = load("robustness_perturbation", RESULTS_DIR_9B) or {}
 out_of_sample_locked_9b = load("out_of_sample_locked", RESULTS_DIR_9B) or {}
 mutation_tests_9b = load("mutation_tests", RESULTS_DIR_9B) or []
+
+# Phase 9C real-data artifacts (research/results_9c_real/) -- the FIRST
+# real market data this project has had (XAUUSD M1, user-supplied MT5
+# export, GMT+3 broker offset confirmed -- see
+# audit/PHASE_9C_DATA_INGESTION.md). Loaded alongside (never merged into,
+# never averaged with) every synthetic result above -- a real-data number
+# must never silently blend with a synthetic one in the same table.
+or_v2_matrix_real = load("or_v2_matrix_real", RESULTS_DIR_9C_REAL) or []
+decision_inspector_real = load("decision_inspector_real", RESULTS_DIR_9C_REAL) or {}
+no_trade_funnel_real = load("no_trade_funnel_v2_real", RESULTS_DIR_9C_REAL) or []
+regime_gating_real = load("regime_gating_real", RESULTS_DIR_9C_REAL) or {}
+fibonacci_depth_real = load("fibonacci_depth_real", RESULTS_DIR_9C_REAL) or {}
+candle_pattern_ablation_real = load("candle_pattern_ablation_real", RESULTS_DIR_9C_REAL) or {}
+or_ablation_9c_real = load("or_ablation_9c_real", RESULTS_DIR_9C_REAL) or {}
+sl_tp_descriptive_real = load("sl_tp_descriptive_real", RESULTS_DIR_9C_REAL) or []
+cost_sensitivity_real = load("cost_sensitivity_real", RESULTS_DIR_9C_REAL) or []
+risk_level_sweep_real = load("risk_level_sweep_real", RESULTS_DIR_9C_REAL) or []
+cross_family_overlap_real = load("cross_family_overlap_real", RESULTS_DIR_9C_REAL) or {}
+locked_oos_real = load("locked_oos_real", RESULTS_DIR_9C_REAL) or {}
+mutation_tests_real = load("mutation_tests_real", RESULTS_DIR_9C_REAL) or []
 
 candles_df = pd.DataFrame(candles)
 if not candles_df.empty:
@@ -857,6 +878,160 @@ def _show_decision_detail(selected_rows, family):
     return "\n".join(lines)
 
 
+# ======================================================== Phase 9C-REAL tabs
+REAL_DATA_BANNER = html.Div(
+    "PHASE 9C -- REAL DATA. XAUUSD M1, user-supplied MT5 export, 2026-05-26 to 2026-09-04 (101 days, "
+    "74 NY sessions), GMT+3 broker offset confirmed. Trade counts are small (11-29 per entry family) -- "
+    "most cells below are statistically INSUFFICIENT_SAMPLE (n<30), reported as such rather than forced. "
+    "See audit/PHASE_9C_STRATEGY_VALIDATION.md.",
+    style={"background": "#ffe0e0", "border": "1px solid #d9534f", "padding": "6px 12px",
+           "marginBottom": "8px", "fontSize": "12px", "fontFamily": "sans-serif"},
+)
+
+
+def or_v2_matrix_real_tab():
+    if not or_v2_matrix_real:
+        return html.Div("No Phase 9C real-data matrix -- run research/run_phase9c_validation.py first.")
+    df = pd.DataFrame(or_v2_matrix_real)
+    keep = ["entry_family", "n", "win_rate", "expectancy_r", "profit_factor", "sharpe",
+            "max_drawdown_r", "verdict", "bh_fdr_survives", "n_rejected_candidates"]
+    keep = [c for c in keep if c in df.columns]
+    return html.Div([
+        REAL_DATA_BANNER,
+        html.H4("OR v2 matrix on REAL XAUUSD data -- 3 entry families"),
+        make_table(_round_df(df[keep]), "or-v2-real-table"),
+        html.P("n=29 (breakout), 22 (retest), 11 (reversal) -- all below this project's own "
+               "MIN_SAMPLE_FOR_ANY_VERDICT=30 threshold, hence INSUFFICIENT_SAMPLE for every cell "
+               "regardless of the point estimate shown. Bootstrap CI / permutation p in the raw JSON.",
+               style={"fontSize": "12px", "color": "#666"}),
+    ])
+
+
+def real_data_experiments_tab():
+    funnel_df = pd.DataFrame(no_trade_funnel_real)
+    regime_rows = [{"regime": k, **v} for k, v in regime_gating_real.get("regime_breakdown_ungated", {}).items()]
+    fib_rows = [{"bucket": "STRUCTURE_ONLY_BASELINE", **fibonacci_depth_real.get("structure_only_baseline", {})}] + \
+               [{"bucket": b, **s} for b, s in fibonacci_depth_real.get("depth_buckets", {}).items()]
+    candle_n_info = sum(1 for k, v in candle_pattern_ablation_real.items()
+                         if k != "PRIMITIVE_ANATOMY_ONLY" and v.get("verdict") == "INFORMATION_PRESENT")
+    candle_n_total = sum(1 for k in candle_pattern_ablation_real if k != "PRIMITIVE_ANATOMY_ONLY")
+    ablation_rows = [{"stage": k, **{kk: vv for kk, vv in v.items() if kk in ("n", "mean_signed_return_atr", "mean_r_multiple", "verdict")}}
+                      for k, v in or_ablation_9c_real.items() if k != "_summary"]
+    return html.Div([
+        REAL_DATA_BANNER,
+        html.H4("13-stage no-trade funnel (real data, 74 candidates per family)"),
+        make_table(_round_df(pd.DataFrame([
+            {"entry_family": r["entry_family"], "n_candidates": r["n_candidates"], "n_executed": r["n_executed"],
+             "execution_rate": r["execution_rate"], **{f"rej_{k}": v for k, v in r.get("rejections_by_stage", {}).items()}}
+            for r in no_trade_funnel_real
+        ])), "funnel-real-table") if no_trade_funnel_real else html.Div("No data."),
+
+        html.H4("Regime breakdown, ungated (breakout family, real data -- every bucket n<10)"),
+        make_table(_round_df(pd.DataFrame(regime_rows)), "regime-real-table") if regime_rows else html.Div("No data."),
+
+        html.H4("Fibonacci depth information (real data)"),
+        make_table(_round_df(pd.DataFrame(fib_rows)), "fib-real-table") if fib_rows else html.Div("No data."),
+        html.P(f"Named candlestick patterns showing information beyond primitive anatomy: {candle_n_info} / {candle_n_total}",
+               style={"fontSize": "12px"}),
+
+        html.H4("OR-specific ablation A (OR only) through G (full model) -- real data"),
+        make_table(_round_df(pd.DataFrame(ablation_rows)), "or-ablation-real-table") if ablation_rows else html.Div("No data."),
+
+        html.H4("SL/TP descriptive comparison -- NOT used to select a config (breakout family, real data)"),
+        make_table(_round_df(pd.DataFrame(sl_tp_descriptive_real)), "sl-tp-real-table") if sl_tp_descriptive_real else html.Div("No data."),
+
+        html.H4("Real-spread cost sensitivity (commission/slippage NOT modeled -- unavailable, not simulated)"),
+        make_table(_round_df(pd.DataFrame(cost_sensitivity_real)), "cost-real-table") if cost_sensitivity_real else html.Div("No data."),
+
+        html.H4("Risk-level sweep -- illustrative only: nothing was ever blocked, so higher risk mechanically "
+                "scaled this one historical path; NOT evidence that higher risk is safer or better"),
+        make_table(_round_df(pd.DataFrame(risk_level_sweep_real)), "risk-real-table") if risk_level_sweep_real else html.Div("No data."),
+
+        html.H4("Cross-family (same-symbol) position overlap simulation"),
+        html.Pre(json.dumps(cross_family_overlap_real, indent=2, default=str), style={"fontSize": "12px"}),
+
+        html.H4("Locked chronological OOS split (70/30, config frozen since Phase 8/9B, never re-tuned to this data)"),
+        html.Pre(json.dumps(locked_oos_real, indent=2, default=str), style={"fontSize": "12px"}),
+
+        html.H4("Mutation testing on real-data run (19/19 strategy-layer invariants)"),
+        make_table(pd.DataFrame(mutation_tests_real), "mutation-real-table") if mutation_tests_real else html.Div("No data."),
+    ])
+
+
+DECISION_INSPECTOR_REAL_FAMILIES = [f for f in ("breakout", "retest", "reversal") if decision_inspector_real.get(f)]
+
+
+def decision_inspector_real_tab():
+    if not DECISION_INSPECTOR_REAL_FAMILIES:
+        return html.Div("No Phase 9C real-data decision inspector data -- run research/run_phase9c_validation.py first.")
+    return html.Div([
+        REAL_DATA_BANNER,
+        html.H4("Decision Inspector (REAL DATA) -- every one of the 74 real NY sessions, all 3 families"),
+        html.P("What did the 15M opening range know? What did the 5M confirmation know? What did the 1M "
+               "entry trigger know? Why entered, or why rejected, and exactly which condition failed."),
+        dcc.Dropdown(
+            id="decision-inspector-real-family",
+            options=[{"label": f.upper(), "value": f} for f in DECISION_INSPECTOR_REAL_FAMILIES],
+            value=DECISION_INSPECTOR_REAL_FAMILIES[0], clearable=False, style={"width": "300px", "marginBottom": "10px"},
+        ),
+        html.Div(id="decision-inspector-real-day-table"),
+        html.Div(id="decision-inspector-real-detail", style={"marginTop": "10px", "padding": "10px", "background": "#f7f7f7",
+                                                               "fontFamily": "monospace", "whiteSpace": "pre-wrap"}),
+    ])
+
+
+@app.callback(Output("decision-inspector-real-day-table", "children"), Input("decision-inspector-real-family", "value"))
+def _render_decision_inspector_real_days(family):
+    days = decision_inspector_real.get(family, [])
+    rows = [_day_summary_row(family, i, d) for i, d in enumerate(days)]
+    df = pd.DataFrame(rows)
+    return make_table(df, "decision-inspector-real-table", page_size=20, selectable=True)
+
+
+@app.callback(
+    Output("decision-inspector-real-detail", "children"),
+    Input("decision-inspector-real-table", "selected_rows"),
+    State("decision-inspector-real-family", "value"),
+)
+def _show_decision_detail_real(selected_rows, family):
+    if not selected_rows:
+        return "Select a day above (all 74 real NY sessions are listed, executed or not) to see its full history."
+    days = decision_inspector_real.get(family, [])
+    day = days[selected_rows[0]]
+    lines = [f"[REAL DATA] OR DAY {day.get('date')}  (family={family})  or_high={day.get('or_high')} or_low={day.get('or_low')}",
+             "", "STATE HISTORY (every OR state transition, in order):"]
+    for ev in day.get("state_history", []):
+        lines.append(f"  {ev.get('timestamp')}  {ev.get('state')}  -- {ev.get('detail')}")
+
+    if not day.get("entry_decisions"):
+        lines.append("")
+        lines.append("WHAT INFORMATION WAS UNAVAILABLE: no EntryDecision was ever created for this day -- "
+                      "the state machine exited before reaching ENTRY_CANDIDATE (see the last state above, "
+                      "e.g. OR_EXPIRED/OR_INVALIDATED -- that IS the answer to 'why rejected' at this stage).")
+
+    for i, dec in enumerate(day.get("entry_decisions", [])):
+        mc = dec.get("market_context", {}) or {}
+        lines += [
+            "", f"ENTRY DECISION #{i + 1}: {dec.get('decision')}  (entry_type={dec.get('entry_type')})",
+            f"  Direction: {dec.get('direction')} | Confidence: {dec.get('confidence')} | Score: {dec.get('score')}",
+            f"  Blocking code: {dec.get('blocking_code')}",
+            f"  WHY ENTERED / WHY REJECTED: reasons passed = {dec.get('reasons') or '(none)'}",
+            f"       failed conditions (what invalidated the setup) = {dec.get('failed_conditions') or '(none)'}",
+            "  WHAT EACH TIMEFRAME KNEW (MARKET_CONTEXT as-of this decision):",
+            f"    [15M/OR] OR state={mc.get('or_state')} OR_high={mc.get('or_high')} OR_low={mc.get('or_low')} | "
+            f"price_location={mc.get('price_location_vs_or')}",
+            f"    [5M/structure] External structure={mc.get('swing_structure')} | Internal structure={mc.get('internal_structure')} | "
+            f"last BOS/CHOCH={mc.get('last_bos_or_choch')} | regime={mc.get('market_regime')} | trend={mc.get('trend_state')}",
+            f"    [context] HTF bias={mc.get('htf_bias')} (confidence={mc.get('bias_confidence')}) | "
+            f"Liquidity state={mc.get('liquidity_state')} | volatility={mc.get('volatility_state')}",
+            f"    Protected high={mc.get('protected_high')} | Protected low={mc.get('protected_low')} | "
+            f"ATR={mc.get('atr')} | Spread={mc.get('spread')} (price units, converted from MT5 points)",
+            f"  Confirmation/entry ts: {dec.get('confirmation_timestamp')} / {dec.get('entry_timestamp')} | "
+            f"Risk state: {dec.get('risk_state')}",
+        ]
+    return "\n".join(lines)
+
+
 app.layout = html.Div([
     DISCLAIMER,
     html.H2("Multi-Strategy Hedge Backtest Terminal (Research / Synthetic Data)"),
@@ -890,6 +1065,9 @@ app.layout = html.Div([
         dcc.Tab(label="[P9B] SL/TP v2 / Cost Sensitivity", children=[sl_tp_cost_9b_tab()]),
         dcc.Tab(label="[P9B] Portfolio Gating", children=[portfolio_gating_9b_tab()]),
         dcc.Tab(label="[P9B] Robustness/OOS/Mutation", children=[robustness_oos_mutation_9b_tab()]),
+        dcc.Tab(label="[P9C-REAL] OR v2 Matrix", children=[or_v2_matrix_real_tab()]),
+        dcc.Tab(label="[P9C-REAL] Decision Inspector", children=[decision_inspector_real_tab()]),
+        dcc.Tab(label="[P9C-REAL] Experiments", children=[real_data_experiments_tab()]),
     ]),
 ])
 
