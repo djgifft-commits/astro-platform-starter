@@ -22,3 +22,7 @@ pnpm-debug.log*
 
 # Local Netlify folder
 .netlify
+research/.venv/
+research/results/
+__pycache__/
+*.pyc
